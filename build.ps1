@@ -48,6 +48,7 @@ $postProfiles = @{
     HorizonOcclusion = 'ps_3_0'
     FilterOcclusion = 'ps_3_0'
     SkyBrightness = 'ps_3_0'
+    DepthOfFieldSource = 'ps_3_0'
     DepthOfField = 'ps_3_0'
     HistogramMeter = 'ps_3_0'
     HistogramRows = 'ps_3_0'

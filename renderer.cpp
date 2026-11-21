@@ -324,6 +324,7 @@ void ReadPbrSettings()
     post.staticIllumination = tick(L"SSGIStaticWorld", post.staticIllumination);
     post.ambientOcclusion = tick(L"AmbientOcclusion", post.ambientOcclusion);
     post.depthOfField = tick(L"DepthOfField", post.depthOfField);
+    post.foregroundBlur = tick(L"DOFForegroundBlur", post.foregroundBlur);
     post.histogramEqualization = tick(L"HistogramEqualization", post.histogramEqualization);
     post.occlusionOnly = read(L"AOView", post.occlusionOnly, 1) == 1;
     post.toneMapper = static_cast<ToneMapper>(read(L"ToneMapper", static_cast<unsigned>(post.toneMapper), 1));
@@ -341,6 +342,7 @@ void ReadPbrSettings()
     post.bloomStreakMix = read(L"HDRBloomStreakMix", post.bloomStreakMix, 100);
     post.vignetteStrength = read(L"HDRVignetteStrength", post.vignetteStrength, 100);
     post.focusDistance = std::max(1u, read(L"DOFFocusDistance", post.focusDistance, 100));
+    post.focusRange = read(L"DOFSharpRange", post.focusRange, 20);
     post.focusRadius = std::max(2u, read(L"DOFBlurRadius", post.focusRadius, 24));
     post.histogramStrength = read(L"HistogramStrength", post.histogramStrength, 100);
 }

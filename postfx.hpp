@@ -14,6 +14,7 @@ struct PostSettings {
     bool ambientOcclusion = true;
     bool occlusionOnly = false;
     bool depthOfField = false;
+    bool foregroundBlur = false;
     bool histogramEqualization = false;
     unsigned reflectionSteps = 64;
     unsigned reflectionDistance = 64;
@@ -28,7 +29,8 @@ struct PostSettings {
     unsigned bloomStrength = 40;
     unsigned bloomStreakMix = 30;
     unsigned vignetteStrength = 65;
-    unsigned focusDistance = 8;
+    unsigned focusDistance = 4;
+    unsigned focusRange = 5;
     unsigned focusRadius = 12;
     unsigned histogramStrength = 30;
     ToneMapper toneMapper = ToneMapper::KhronosNeutral;

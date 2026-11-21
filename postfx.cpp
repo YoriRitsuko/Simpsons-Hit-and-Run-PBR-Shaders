@@ -17,6 +17,7 @@
 #include "HorizonOcclusion.inc"
 #include "FilterOcclusion.inc"
 #include "SkyBrightness.inc"
+#include "DepthOfFieldSource.inc"
 #include "DepthOfField.inc"
 #include "HistogramMeter.inc"
 #include "HistogramRows.inc"
@@ -117,6 +118,7 @@ struct Frame {
     ComPtr<IDirect3DPixelShader9> horizonOcclusion;
     ComPtr<IDirect3DPixelShader9> filterOcclusion;
     ComPtr<IDirect3DPixelShader9> skyBrightness;
+    ComPtr<IDirect3DPixelShader9> depthOfFieldSource;
     ComPtr<IDirect3DPixelShader9> depthOfField;
     Target world;
     Target processed;
@@ -125,6 +127,7 @@ struct Frame {
     Target staticShape;
     Target occlusion;
     Target occlusionScratch;
+    Target focusSource;
     std::array<BloomLevel, 4> bloom;
     Target bloomStreak;
     Histogram histogram;
@@ -176,6 +179,7 @@ struct Frame {
         staticShape.Release();
         occlusion.Release();
         occlusionScratch.Release();
+        focusSource.Release();
         ClearBloom();
         histogram.Clear();
         for (auto& target : material) target.Release();
@@ -193,6 +197,7 @@ struct Frame {
         horizonOcclusion.Reset();
         filterOcclusion.Reset();
         skyBrightness.Reset();
+        depthOfFieldSource.Reset();
         depthOfField.Reset();
         ready = reflectionReady = indirectReady = active = depthBound = hasReceivers = false;
         staticDepthReady = hasStaticReceivers = staticShapeResolved = false;
@@ -366,6 +371,15 @@ bool CreateHistogram(IDirect3DDevice9* device)
            shader(HistogramCurveCode, histogram.curveShader) && shader(ApplyHistogramCode, histogram.applyShader);
 }
 
+bool CreateDepthOfField(IDirect3DDevice9* device)
+{
+    return EnsureProcessedTarget(device) && frame.focusSource.Create(device, frame.width, frame.height) &&
+           SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(DepthOfFieldSourceCode),
+                                               frame.depthOfFieldSource.Put())) &&
+           SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(DepthOfFieldCode),
+                                               frame.depthOfField.Put()));
+}
+
 bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
 {
     if (frame.device == device && frame.width == desc.Width && frame.height == desc.Height) return frame.ready;
@@ -410,11 +424,12 @@ bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
     if (options.reflections && !frame.reflectionReady) ShaderLog("SSR depth or material targets are unavailable.");
     if (indirect && !frame.indirectReady) ShaderLog("SSGI depth or material targets are unavailable.");
     if (ao && !frame.aoReady) ShaderLog("Ambient occlusion depth or half-resolution targets are unavailable.");
-    if (options.depthOfField &&
-        (!depth || !EnsureProcessedTarget(device) ||
-         FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(DepthOfFieldCode),
-                                          frame.depthOfField.Put()))))
+    if (options.depthOfField && (!depth || !CreateDepthOfField(device))) {
+        frame.focusSource.Release();
+        frame.depthOfFieldSource.Reset();
+        frame.depthOfField.Reset();
         ShaderLog("Depth of field requires readable depth and an HDR scratch target.");
+    }
     if (options.histogramEqualization && options.histogramStrength && !CreateHistogram(device)) {
         frame.histogram.Clear();
         ShaderLog("Histogram equalization targets are unavailable.");
@@ -783,16 +798,29 @@ void RenderDepthOfField(IDirect3DDevice9* device)
 {
     if (!frame.depthOfField.Get() || !frame.depthBound || !frame.worldProjectionKnown) return;
     if (FAILED(device->SetPixelShaderConstantF(1, &frame.worldProjection.m[0][0], 4))) return;
-    const float blur = options.focusRadius * (float(frame.height) / 1080.0f);
-    const std::array<float, 4> parameters = {float(options.focusDistance), 0,
-                                             blur / frame.width, blur / frame.height};
+    const float foreground = options.foregroundBlur ? 1.0f : 0.0f;
+    const float sharpEnd = float(options.focusDistance + options.focusRange);
     Sample(device, 1, frame.readableDepth.Get(), D3DTEXF_POINT);
-    const bool drawn = DrawPostPass(device, frame.depthOfField.Get(), frame.world, frame.processed, parameters);
+    const bool prepared = DrawPostPass(device, frame.depthOfFieldSource.Get(), frame.world, frame.focusSource,
+                                       {float(options.focusDistance), sharpEnd, foreground}, D3DTEXF_POINT);
     device->SetTexture(1, nullptr);
+    if (!prepared) return;
+
+    const float blur = options.focusRadius * (float(frame.height) / 1080.0f);
+    Sample(device, 1, frame.world.texture.Get(), D3DTEXF_POINT);
+    Sample(device, 2, frame.focusSource.texture.Get(), D3DTEXF_LINEAR);
+    const bool drawn = DrawPostPass(device, frame.depthOfField.Get(), frame.focusSource, frame.processed,
+                                    {foreground, 0, blur / frame.width, blur / frame.height}, D3DTEXF_POINT);
+    device->SetTexture(1, nullptr);
+    device->SetTexture(2, nullptr);
     if (drawn) {
         frame.world.Swap(frame.processed);
         static bool logged = false;
-        if (!logged) { ShaderLog("Rendered depth of field from the world depth."); logged = true; }
+        if (!logged) {
+            ShaderLog(options.foregroundBlur ? "Rendered 32-tap depth of field with foreground blur." :
+                                               "Rendered 32-tap background depth of field.");
+            logged = true;
+        }
     }
 }
 

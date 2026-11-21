@@ -102,10 +102,12 @@ The pass follows the horizon integration from
 Both effects start off and require Linear HDR. Enable them in **Camera
 Effects** in Mod Settings and restart the game.
 
-- **Depth of Field** uses the completed world's INTZ depth to blur objects
-  in front of or behind the focal plane. **Focus Distance (World Units)**
-  defaults to 8 (1–100). **Maximum Blur Radius** defaults to 12 pixels at
-  1080p (2–24) and scales with the backbuffer height.
+- **Depth of Field** uses the completed world's INTZ depth and a 32-sample
+  disk. **Focus Distance** defaults to 4 world units (1–100), and **Sharp
+  Range Behind Focus** keeps the next 5 units sharp by default (0–20).
+  The background softens beyond that range. **Blur Foreground** is off by
+  default. **Maximum Blur Radius** defaults to 12 pixels at 1080p (2–24)
+  and scales with the backbuffer height.
 - **Histogram Equalization** remaps the tone-mapped world's luminance using
   a 128-bin cumulative histogram. The curve adapts over time and eases
   out on nearly uniform frames. **Histogram Equalization Strength (%)**
