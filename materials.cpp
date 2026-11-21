@@ -88,6 +88,20 @@ void LoadPbr(Material& material, const std::wstring& ini, const wchar_t* section
     material.emissiveStrength = ParseFloat(IniValue(ini, section, L"EmissiveStrength", L""), 1.0f, 16.0f);
 }
 
+void LoadInterior(Material& material, const std::wstring& ini, const wchar_t* section)
+{
+    material.alphaMode = AlphaMode::Opaque;
+    material.interiorMap = TextureSetting(ini, section, L"InteriorMap");
+    material.interiorDepth = std::max(0.05f, ParseFloat(IniValue(ini, section, L"InteriorDepth", L""), 3.0f, 30.0f));
+    material.interiorTiles = {
+        std::max(1.0f, std::round(ParseFloat(IniValue(ini, section, L"InteriorTilesU", L""), 1.0f, 32.0f))),
+        std::max(1.0f, std::round(ParseFloat(IniValue(ini, section, L"InteriorTilesV", L""), 1.0f, 32.0f))),
+    };
+    material.interiorBrightness = ParseFloat(IniValue(ini, section, L"InteriorBrightness", L""), 1.0f, 8.0f);
+    material.glassRoughness = ParseFloat(IniValue(ini, section, L"GlassRoughness", L""), 0.08f, 1.0f);
+    material.glassReflectance = ParseFloat(IniValue(ini, section, L"GlassReflectance", L""), 0.06f, 1.0f);
+}
+
 void LoadConfig()
 {
     const std::wstring ini = directory + L"VehicleShaders.ini";
@@ -102,6 +116,7 @@ void LoadConfig()
         Material material;
         if (!_wcsicmp(mode.c_str(), L"Paint")) material.mode = MaterialMode::Paint;
         else if (!_wcsicmp(mode.c_str(), L"PBR")) material.mode = MaterialMode::Pbr;
+        else if (!_wcsicmp(mode.c_str(), L"Interior")) material.mode = MaterialMode::Interior;
         else if (_wcsicmp(mode.c_str(), L"Glass")) continue;
 
         material.normalMap = TextureSetting(ini, section, L"NormalMap");
@@ -117,7 +132,15 @@ void LoadConfig()
         material.reflection = ParseFloat(IniValue(ini, section, L"Reflection", L""), 0.55f, 2.0f);
         material.normalStrength = ParseFloat(IniValue(ini, section, L"NormalStrength", L""), 1.0f, 4.0f);
         material.maskSet = IniValue(ini, section, L"MaskSet", L"0") == L"1" ? 1 : 0;
-        if (material.mode == MaterialMode::Pbr) LoadPbr(material, ini, section);
+        if (material.mode == MaterialMode::Pbr || material.mode == MaterialMode::Interior)
+            LoadPbr(material, ini, section);
+        if (material.mode == MaterialMode::Interior) {
+            LoadInterior(material, ini, section);
+            if (material.baseColor.empty() || material.interiorMap.empty()) {
+                ShaderLog("Interior materials need BaseColor and InteriorMap: ", name);
+                continue;
+            }
+        }
         configured.emplace(Lower(name), std::move(material));
     }
 }
@@ -182,6 +205,16 @@ void LoadDemo()
     bounceEmitter.emissiveStrength = ParseFloat(IniValue(ini, L"PBRBounceEmitter_m", L"EmissiveStrength", L""),
                                                4.0f, 16.0f);
     configured.try_emplace("pbrbounceemitter_m", std::move(bounceEmitter));
+
+    Material window;
+    window.mode = MaterialMode::Interior;
+    window.baseColor = L"interior-preview-facade.tga";
+    window.interiorMap = L"interior-preview-room.tga";
+    window.interiorDepth = 2.2f;
+    window.interiorBrightness = 0.55f;
+    window.glassReflectance = 0.09f;
+    window.emissiveStrength = 2.0f;
+    configured.try_emplace("pbrinteriorwindow_m", std::move(window));
 
     // These names are unique to the sedan's painted panels. Keep the game
     // texture binding so the normal-to-damaged texture swaps still work.
@@ -395,12 +428,29 @@ std::vector<uint8_t> ReadTextureFile(const std::wstring& filename)
     CloseHandle(file);
     return success ? std::move(buffer) : std::vector<uint8_t>{};
 }
+
+std::vector<uint8_t> ReadInteriorPreviewTexture(const std::wstring& filename)
+{
+    unsigned id;
+    if (!_wcsicmp(filename.c_str(), L"interior-preview-facade.tga")) id = 102;
+    else if (!_wcsicmp(filename.c_str(), L"interior-preview-room.tga")) id = 103;
+    else return {};
+
+    HMODULE module;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&ReadInteriorPreviewTexture), &module)) return {};
+    const auto resource = FindResourceW(module, MAKEINTRESOURCEW(id), MAKEINTRESOURCEW(10));
+    if (!resource) return {};
+    const auto* data = static_cast<const uint8_t*>(LockResource(LoadResource(module, resource)));
+    return data ? std::vector<uint8_t>(data, data + SizeofResource(module, resource)) : std::vector<uint8_t>{};
+}
 }
 
 Image ReadTarga(const std::wstring& filename)
 {
     Image image;
-    const auto buffer = ReadTextureFile(filename);
+    auto buffer = ReadTextureFile(filename);
+    if (buffer.empty()) buffer = ReadInteriorPreviewTexture(filename);
     const auto length = buffer.size();
     if (length < 18 || buffer[1] || buffer[2] != 2) return image;
     const unsigned width = buffer[12] | (buffer[13] << 8);

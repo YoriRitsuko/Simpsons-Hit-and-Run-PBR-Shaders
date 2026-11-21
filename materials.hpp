@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-enum class MaterialMode { Glass, Paint, Pbr };
+enum class MaterialMode { Glass, Paint, Pbr, Interior };
 enum class AlphaMode { Opaque, Mask, Blend };
 
 struct Image {
@@ -37,6 +37,12 @@ struct Material {
     std::wstring orm;
     std::wstring emissive;
     std::wstring environment;
+    std::wstring interiorMap;
+    float interiorDepth = 3.0f;
+    std::array<float, 2> interiorTiles{1, 1};
+    float interiorBrightness = 1.0f;
+    float glassRoughness = 0.08f;
+    float glassReflectance = 0.06f;
 };
 
 struct EnvironmentMap {

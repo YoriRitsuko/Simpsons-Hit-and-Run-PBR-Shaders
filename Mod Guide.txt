@@ -151,16 +151,16 @@ It can run with Bloom disabled. The HUD draws after both effects.
 
 CAMERA EFFECTS
 
-Depth of Field and Histogram Equalization both default to off. Each
-requires Linear HDR, and Depth of Field also requires INTZ depth support.
+Depth of Field and Histogram Equalization both start enabled in the
+bundled preset. Each requires Linear HDR, and Depth of Field also requires
+INTZ depth support.
 Restart the game after changing their Mod Settings.
 
 Depth of Field gathers up to 32 samples in a disk using the distance from
-the camera. Focus Distance defaults to 4 world units (1 to 100). Sharp
+the camera. Focus Distance defaults to 90 world units (1 to 100). Sharp
 Range Behind Focus extends the clear area by 5 world units by default
-(0 to 20), so the character stays sharp as the walking camera pulls back.
-The background blurs beyond that range. Enable Blur Foreground to also
-blur objects in front of the focal plane. Maximum Blur Radius defaults
+(0 to 20). Defocused surfaces soften across their depth edges. Enable
+Blur Foreground to also blur objects in front of the focal plane. Maximum Blur Radius defaults
 to 12 pixels at 1080p (2 to 24) and scales with resolution. Translucent
 surfaces use the available opaque depth behind them.
 
@@ -168,7 +168,7 @@ Histogram Equalization samples tone-mapped game color on a 64 by 36 grid,
 builds a cumulative distribution across 128 perceptual luminance bins,
 and remaps luminance using that distribution. The curve adapts smoothly
 between frames. Nearly uniform scenes stay close to the original exposure.
-Histogram Equalization Strength defaults to 30% (0 to 100%).
+Histogram Equalization Strength defaults to 35% (0 to 100%).
 Both effects are applied before the HUD and skipped in AO's diagnostic view.
 
 SSR uses scene color and an INTZ depth texture after the world finishes

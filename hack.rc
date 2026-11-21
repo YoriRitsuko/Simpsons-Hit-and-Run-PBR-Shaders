@@ -1,3 +1,5 @@
 META.INI DATA "HackMeta.ini"
 LICENSE DATA "LICENSE"
 101 RCDATA "resources/Aces13Srgb.rgba16f"
+102 RCDATA "resources/interior-preview-facade.tga"
+103 RCDATA "resources/interior-preview-room.tga"

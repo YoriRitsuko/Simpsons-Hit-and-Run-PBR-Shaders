@@ -2,6 +2,7 @@
 
 Glass can pick up a spheremap reflection. Rigid meshes can use forward PBR
 with GGX highlights, roughness-filtered HDR reflections and RGB emission.
+Static façades can use mirror-ball interior mapping with reflective glass.
 The linear HDR world pass adds selectable tone mapping, convolution bloom
 with horizontal streaks, vignette, opaque screen-space reflections,
 screen-space global illumination and ambient occlusion. Depth of field and
@@ -99,19 +100,20 @@ The pass follows the horizon integration from
 
 ### Camera effects
 
-Both effects start off and require Linear HDR. Enable them in **Camera
-Effects** in Mod Settings and restart the game.
+Both effects require Linear HDR and start enabled in the bundled preset.
+Use **Camera Effects** in Mod Settings and restart after changing them.
 
 - **Depth of Field** uses the completed world's INTZ depth and a 32-sample
-  disk. **Focus Distance** defaults to 4 world units (1–100), and **Sharp
+  disk. **Focus Distance** defaults to 90 world units (1–100), and **Sharp
   Range Behind Focus** keeps the next 5 units sharp by default (0–20).
   The background softens beyond that range. **Blur Foreground** is off by
-  default. **Maximum Blur Radius** defaults to 12 pixels at 1080p (2–24)
-  and scales with the backbuffer height.
+  default. Out-of-focus surfaces soften across their depth edges.
+  **Maximum Blur Radius** defaults to 12 pixels at 1080p (2–24) and scales
+  with the backbuffer height.
 - **Histogram Equalization** remaps the tone-mapped world's luminance using
   a 128-bin cumulative histogram. The curve adapts over time and eases
   out on nearly uniform frames. **Histogram Equalization Strength (%)**
-  defaults to 30 (0–100).
+  defaults to 35 (0–100).
 
 Both effects apply to the world before the HUD. **AO View → Occlusion Only**
 shows the diagnostic image without either effect.
@@ -121,8 +123,10 @@ shows the diagnostic image without either effect.
 To try the Level 1 demo, put `PBR Shader Demo.lmlm` in `Mods` and the
 package's `VehicleShaders` texture folder beside `Simpsons.exe`. Tick
 **PBR Shader Demo** in **General**. The shiny material preview sits by the
-Simpsons house. The Family Sedan uses PBR paint on its opaque body panels
-and the stock EnvMap.bmp on its transparent windshield.
+Simpsons house, beside the framed interior preview. Walk sideways past the
+window to see the room and reflection move. The Family Sedan uses PBR paint
+on its opaque body panels and the stock EnvMap.bmp on its transparent
+windshield. [Authoring interior materials](docs/Materials.md#interior-mapped-windows)
 
 Enable SSGI and turn off Bloom to see the cyan emitter tint the matte white
 panel beside the preview. Move the camera around the fixture to see how the

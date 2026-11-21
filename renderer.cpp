@@ -189,6 +189,7 @@ struct DeviceResources {
     bool loggedPbrLights = false;
     bool loggedPbrOpaque = false;
     bool loggedPbrBlend = false;
+    bool loggedInterior = false;
     bool loggedGameAlbedo = false;
     bool loggedLayout = false;
 
@@ -741,6 +742,12 @@ public:
         if (!albedo || !normal || !environment || !orm || !emission) return false;
         D3DSURFACE_DESC environmentDesc{};
         if (FAILED(environment->GetLevelDesc(0, &environmentDesc))) return false;
+        const bool interior = material.mode == MaterialMode::Interior;
+        IDirect3DTexture9* room = nullptr;
+        if (interior) {
+            room = resources.Texture(device, material.interiorMap, BuiltinTexture::Black);
+            if (!room) return false;
+        }
 
         D3DMATRIX world{}, view{}, projection{};
         if (FAILED(device->GetTransform(D3DTS_WORLD, &world)) ||
@@ -756,9 +763,12 @@ public:
         const float normalScale[4] = {0, 0, 0, material.normalStrength};
         const float lighting[4] = {float(environment->GetLevelCount() - 1), float(lights.count),
                                    environmentStrength, linear ? 1.0f : 0.0f};
-        const float sampling[2][4] = {
-            {linear ? 1.0f : 0.0f, linear && material.environment.empty() ? 1.0f : 0.0f, 0, 0},
+        const float sampling[4][4] = {
+            {linear ? 1.0f : 0.0f, (linear || interior) && material.environment.empty() ? 1.0f : 0.0f, 0, 0},
             {float(environmentDesc.Width), float(environmentDesc.Height), 0, 0},
+            {interior ? material.interiorDepth : 0.0f, material.interiorTiles[0], material.interiorTiles[1],
+             material.interiorBrightness},
+            {material.glassRoughness, material.glassReflectance, 0, 0},
         };
         const float surface[4] = {material.opacity, material.alphaCutoff,
                                   static_cast<float>(material.alphaMode), material.orm.empty() ? 0.0f : 1.0f};
@@ -776,7 +786,7 @@ public:
             FAILED(device->SetPixelShaderConstantF(8, lighting, 1)) ||
             FAILED(device->SetPixelShaderConstantF(9, &lights.directions[0][0], PbrLightLimit)) ||
             FAILED(device->SetPixelShaderConstantF(17, &lights.colors[0][0], PbrLightLimit)) ||
-            FAILED(device->SetPixelShaderConstantF(25, &sampling[0][0], 2))) return false;
+            FAILED(device->SetPixelShaderConstantF(25, &sampling[0][0], 4))) return false;
 
         if (!resources.loggedPbrLights) {
             resources.loggedPbrLights = true;
@@ -791,6 +801,12 @@ public:
             SetSampling(device, slot, slot == 2 ? D3DTADDRESS_CLAMP : D3DTADDRESS_WRAP);
         }
         if (environment->GetLevelCount() > 1) device->SetSamplerState(2, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        if (interior) {
+            if (FAILED(device->SetTexture(5, room)) ||
+                FAILED(device->SetSamplerState(5, D3DSAMP_SRGBTEXTURE, FALSE)) ||
+                FAILED(device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE))) return false;
+            SetSampling(device, 5, D3DTADDRESS_CLAMP);
+        }
         const bool transparent = material.alphaMode == AlphaMode::Blend;
         if (transparent &&
             (FAILED(device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE)) ||
@@ -896,7 +912,8 @@ HRESULT Render(IDirect3DDevice9* device, Draw draw)
         effect.Restore();
         if (FAILED(original) || material->reflection == 0) return original;
     }
-    const bool pbr = material->mode == MaterialMode::Pbr;
+    const bool interior = material->mode == MaterialMode::Interior;
+    const bool pbr = material->mode == MaterialMode::Pbr || interior;
     if (!(pbr ? effect.ApplyPbr(device, *material) : effect.Apply(device, *material))) {
         effect.Restore();
         return glass ? original : stock();
@@ -906,6 +923,10 @@ HRESULT Render(IDirect3DDevice9* device, Draw draw)
     effect.Restore();
     if (FAILED(rendered)) return glass ? original : stock();
     if (pbr) {
+        if (interior && !resources.loggedInterior) {
+            resources.loggedInterior = true;
+            ShaderLog("Rendered an opaque interior-mapped window.");
+        }
         if (material->baseColor.empty() && !resources.loggedGameAlbedo) {
             resources.loggedGameAlbedo = true;
             ShaderLog("Rendered PBR with the stock material texture binding.");

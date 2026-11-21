@@ -74,3 +74,42 @@ Check **Linear HDR** and **Bloom** in **PBR Shaders → Mod Settings** to see th
 - Double-check the directory beside **Simpsons.exe** and the TGA export setting. For example, `NormalMap=body_normal.tga` points to `VehicleShaders/body_normal.tga`. A bad configured texture can send the material back to the stock draw.
 - Turn off the Level 1 demo while testing your own replacement for the Family Sedan. Its path handler has its own windshield setup.
 - Use the log to check for `Selected material`, then `Rendered opaque PBR material` or `Rendered translucent PBR material`. [Getting a log](LMLH-Development.md#playtest-and-debug)
+## Interior-mapped windows
+
+Use `Mode=Interior` on a flat, rigid level façade with positions, normals
+and UV0. Name the INI section after its Pure3D shader chunk. The material
+writes depth at the glass plane, so it can be drawn with the opaque scenery.
+For a double-sided prop, enable the shader chunk's two-sided flag on one
+surface.
+
+```ini
+[shop_window_m]
+Mode=Interior
+BaseColor=shop-facade.tga
+InteriorMap=shop-room.tga
+InteriorDepth=3.0
+InteriorBrightness=0.7
+EmissiveStrength=2.0
+GlassRoughness=0.08
+GlassReflectance=0.06
+```
+
+Author two 32-bit, uncompressed TGA textures beside `VehicleShaders.ini`.
+
+| Texture | RGB | Alpha |
+| --- | --- | --- |
+| `BaseColor` | sRGB façade paint and frames | Linear mask. White reveals the glass and room. Black keeps the façade. |
+| `InteriorMap` | sRGB mirror-ball capture from the center of the room | Linear emission mask. Black uses the room brightness alone. White adds the full `EmissiveStrength`, tinted by RGB. |
+
+Aim the room capture at the back wall so it appears at the center of the
+disc. Keep the horizon level, with the room's right and up directions
+matching the façade UV orientation. The shader uses the window's UV scale
+and `InteriorDepth` in world units to intersect the virtual box. Use
+`InteriorTilesU` and `InteriorTilesV` for repeated rooms on a larger
+façade with matching UVs. Each defaults to 1.
+
+Glass uses the same optional HDR `Environment` DDS as other PBR materials.
+`GlassReflectance` controls its head-on reflectance. The reflection grows
+as the viewing angle becomes more oblique. A mipmapped environment lets
+`GlassRoughness` soften the reflection. Regular PBR exterior maps can still
+shade the frame and masked parts of the surface.

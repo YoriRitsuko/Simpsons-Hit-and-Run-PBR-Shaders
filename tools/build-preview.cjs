@@ -113,15 +113,15 @@ function chunk(id, data, children = []) {
         data, ...children]);
 }
 
-function shader(name, translucent) {
-    const texture = chunk(0x11002, Buffer.concat([Buffer.from("TEX\0"), pstring("PBRPreviewWhite.png")]));
-    const params = [["LIT\0", 1], ["BLMD", translucent ? 1 : 0], ["2SID", 0], ["ATST", 0]]
+function shader(name, translucent, textureName = "PBRPreviewWhite.png", twoSided = false) {
+    const texture = chunk(0x11002, Buffer.concat([Buffer.from("TEX\0"), pstring(textureName)]));
+    const params = [["LIT\0", 1], ["BLMD", translucent ? 1 : 0], ["2SID", Number(twoSided)], ["ATST", 0]]
         .map(([key, value]) => chunk(0x11003, Buffer.concat([Buffer.from(key), uints(value)])));
     return chunk(0x11000, Buffer.concat([pstring(name), uints(0), pstring("simple"),
         uints(Number(translucent), 0x11, 0xffffffff, params.length + 1)]), [texture, ...params]);
 }
 
-function whiteTexture() {
+function whiteTexture(textureName = "PBRPreviewWhite.png") {
     // A one-pixel stock fallback keeps UV0 in the game's draw stream.
     const pngChunk = (type, data) => {
         const body = Buffer.concat([Buffer.from(type), data]);
@@ -133,7 +133,7 @@ function whiteTexture() {
     const header = Buffer.from([0,0,0,1, 0,0,0,1, 8,2,0,0,0]);
     const img = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), pngChunk("IHDR", header),
         pngChunk("IDAT", zlib.deflateSync(Buffer.from([0,255,255,255]))), pngChunk("IEND", Buffer.alloc(0))]);
-    const name = pstring("PBRPreviewWhite.png");
+    const name = pstring(textureName);
     return chunk(0x19000, Buffer.concat([name, uints(14000, 1, 1, 24, 0, 1, 1, 0, 0)]), [
         chunk(0x19001, Buffer.concat([name, uints(14000, 1, 1, 24, 0, 0, 1)]), [
             chunk(0x19002, Buffer.concat([uints(img.length), img]))
@@ -239,8 +239,89 @@ function bounceDemo(chunks, textureDir) {
     });
 }
 
+function drawTexture(width, height, sample) {
+    const pixels = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++)
+            pixels.set(sample((x + 0.5) / width, (y + 0.5) / height), (y * width + x) * 4);
+    }
+    return { width, height, pixels };
+}
+
+function facadeTexel(u, v) {
+    if (u < 0.045 || u > 0.955 || v < 0.07 || v > 0.93) return [99, 60, 46, 0];
+    if (u < 0.085 || u > 0.915 || v < 0.12 || v > 0.87) return [195, 131, 79, 0];
+    if (Math.abs(u - 0.5) < 0.016 || Math.abs(v - 0.50) < 0.028) return [119, 71, 55, 0];
+    return [68, 50, 40, 255];
+}
+
+function roomTexel(axis, hit) {
+    const [x, y, z] = hit;
+    if (axis === 1) {
+        if (y < 0.5)
+            return Math.abs(x - 0.5) < 0.20 && Math.abs(z - 0.55) < 0.13 ? [255, 227, 165, 255] : [169, 150, 111, 0];
+        const tile = (Math.floor(x * 8) + Math.floor(z * 8)) % 2;
+        return tile ? [148, 97, 66, 0] : [109, 70, 53, 0];
+    }
+    if (y > 0.91) return [77, 46, 39, 0];
+    if (y > 0.88 || y < 0.07) return [168, 116, 76, 0];
+    if (axis === 2 && z > 0.5) {
+        if (x > 0.20 && x < 0.79 && y > 0.22 && y < 0.65) {
+            if (x < 0.24 || x > 0.75 || y < 0.26 || y > 0.61) return [102, 62, 48, 0];
+            if (Math.abs(x - 0.50) < 0.014) return [141, 90, 58, 0];
+            return y < 0.39 ? [120, 168, 175, 45] : [212, 147, 79, 66];
+        }
+        return [114, 145, 123, 0];
+    }
+    if (axis === 0) {
+        if (z > 0.25 && z < 0.68 && y > 0.50 && y < 0.77) {
+            if (y > 0.72 || y < 0.56) return [110, 62, 41, 0];
+            return Math.floor(z * 22) % 2 ? [155, 86, 68, 0] : [199, 133, 74, 0];
+        }
+        return x < 0.5 ? [162, 118, 87, 0] : [179, 141, 93, 0];
+    }
+    return [131, 104, 78, 0];
+}
+
+function interiorDemo(output) {
+    const size = [2.6, 1.6, 2.2];
+    const center = [221.3, 4.34, -177.7];
+    const tangent = [Math.SQRT1_2, 0, -Math.SQRT1_2];
+    const normal = [Math.SQRT1_2, 0, Math.SQRT1_2];
+    const uvs = [[0, 0], [0, 1], [1, 1], [1, 0]];
+    const mesh = {
+        points: uvs.map(([u, v]) => center.map((origin, axis) => origin + tangent[axis] * (u - 0.5) * size[0]
+            + (axis === 1 ? (0.5 - v) * size[1] : 0))),
+        normals: uvs.map(() => normal),
+        uvs,
+        indices: [0, 1, 2, 0, 2, 3],
+    };
+    const textureName = "InteriorPreviewWhite.png";
+    const material = "PBRInteriorWindow_m";
+    const chunks = [whiteTexture(textureName), shader(material, false, textureName, true),
+        staticEntity(mesh, material, "PBRInteriorWindow", false)];
+    fs.mkdirSync(output, { recursive: true });
+    fs.writeFileSync(path.join(output, "PBRInterior.p3d"), chunk(0xff443350, Buffer.alloc(0), chunks));
+    writeTga(path.join(output, "interior-preview-facade.tga"), drawTexture(256, 128, facadeTexel));
+    writeTga(path.join(output, "interior-preview-room.tga"), drawTexture(256, 256, (u, v) => {
+        const px = (u - 0.5) * 2;
+        const py = (v - 0.5) * 2;
+        const r2 = Math.min(px * px + py * py, 1);
+        const scale = 2 * Math.sqrt(1 - r2);
+        // Invert SphereUV, looking into a room with the back wall at the map center.
+        const ray = [px * scale / size[0], py * scale / size[1], (1 - 2 * r2) / size[2]];
+        const axis = ray.reduce((best, value, i) => Math.abs(value) > Math.abs(ray[best]) ? i : best, 0);
+        const hit = ray.map(component => 0.5 + 0.5 * component / Math.abs(ray[axis]));
+        return roomTexel(axis, hit);
+    }));
+}
+
 const [input, output, overrideTextures] = process.argv.slice(2);
-if (!input || !output) throw new Error("Usage: node build-preview.cjs EXTRACTED_MATERIAL_PREVIEW OUTPUT_FOLDER [TEXTURE_FOLDER]");
+if (!input || !output) throw new Error("Usage: node build-preview.cjs EXTRACTED_MATERIAL_PREVIEW|--interior OUTPUT_FOLDER [TEXTURE_FOLDER]");
+if (input === "--interior") {
+    interiorDemo(output);
+    return;
+}
 const sourceTextures = overrideTextures || path.join(input, "MaterialPreviewMesh_Textures");
 const textureDir = path.join(output, "VehicleShaders");
 fs.mkdirSync(textureDir, { recursive: true });

@@ -14,11 +14,17 @@ float4 DepthOfFieldSource(float2 uv : TEXCOORD0) : COLOR0
     return float4(color, CircleOfConfusion(depth));
 }
 
-float DofLayerWeight(float coc, float tapCoc, bool blurForeground)
+float DofLayerWeight(float coc, float tapCoc, float distance, bool blurForeground)
 {
-    float similar = 1.0 - smoothstep(0.08, 0.40, abs(coc - tapCoc));
-    // In background mode, keep sharp objects out of neighboring blurred pixels.
-    return blurForeground ? similar : similar * saturate(tapCoc * 64.0);
+    if (coc > 0.0 && tapCoc > 0.0) {
+        // A defocused receiver gathers farther color across its silhouette.
+        // A closer donor can reach the receiver within its own blur disk.
+        float coverage = smoothstep(-0.07, 0.07, tapCoc - distance);
+        float ratio = coc / max(tapCoc, 0.12);
+        float closer = coverage * min(ratio * ratio, 4.0);
+        return (tapCoc >= coc ? 1.0 : closer) * saturate(tapCoc * 64.0);
+    }
+    return blurForeground ? 1.0 - smoothstep(0.08, 0.40, abs(coc - tapCoc)) : 0.0;
 }
 
 float DofForegroundWeight(float coc, float tapCoc, float distance)
@@ -52,13 +58,13 @@ float4 DepthOfField(float2 uv : TEXCOORD0) : COLOR0
     float4 layer = float4(center.rgb, 1);
     float4 foreground = 0;
     [loop] for (int i = 0; i < 16; ++i) {
-        float distance = sqrt((i + 0.5) / 16.0) * radius;
+        float distance = sqrt((i + 0.2) / 16.0) * radius;
         float2 offset = direction * distance * passParameters.zw;
         float4 left = SampleDof(uv - offset);
         float4 right = SampleDof(uv + offset);
         float receiver = blurForeground ? saturate((abs(coc) - distance) * 5.0 + 0.5) : 1.0;
-        layer += float4(left.rgb, 1) * (receiver * DofLayerWeight(coc, left.a, blurForeground));
-        layer += float4(right.rgb, 1) * (receiver * DofLayerWeight(coc, right.a, blurForeground));
+        layer += float4(left.rgb, 1) * (receiver * DofLayerWeight(coc, left.a, distance, blurForeground));
+        layer += float4(right.rgb, 1) * (receiver * DofLayerWeight(coc, right.a, distance, blurForeground));
         [branch] if (blurForeground) {
             foreground += float4(left.rgb, 1) * DofForegroundWeight(coc, left.a, distance);
             foreground += float4(right.rgb, 1) * DofForegroundWeight(coc, right.a, distance);

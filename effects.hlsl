@@ -48,6 +48,7 @@ sampler2D normalTexture : register(s1);
 sampler2D sphereTexture : register(s2);
 sampler2D ormTexture : register(s3);
 sampler2D emissiveTexture : register(s4);
+sampler2D interiorTexture : register(s5);
 float4 paintAndReflection : register(c0);
 float4 lightAndNormal : register(c1);
 float4 renderParameters : register(c2);
@@ -59,6 +60,8 @@ float4 pbrLightDirections[8] : register(c9);
 float4 pbrLightColors[8] : register(c17);
 float4 materialColorSpace : register(c25);
 float2 environmentSize : register(c26);
+float4 interiorParameters : register(c27);
+float2 windowGlass : register(c28);
 
 float3 LinearRGB(float3 color);
 
@@ -173,6 +176,38 @@ float SmithVisibility(float NoV, float NoL, float alphaSquared)
     return 0.5 / max(viewTerm + lightTerm, 0.0001);
 }
 
+float3 MappedInterior(PixelInput input, float3 normal, float3 view)
+{
+    float2 roomUv = input.uv * interiorParameters.yz;
+    float3 dx = ddx(input.viewPosition);
+    float3 dy = ddy(input.viewPosition);
+    float2 du = ddx(input.uv) * interiorParameters.yz;
+    float2 dv = ddy(input.uv) * interiorParameters.yz;
+    float3 across = cross(dy, normal);
+    float3 down = cross(normal, dx);
+    float det = dot(dx, across);
+    float inverseDet = (det >= 0 ? 1.0 : -1.0) / max(abs(det), 1e-12);
+    float3 gradientU = (across * du.x + down * dv.x) * inverseDet;
+    float3 gradientV = (across * du.y + down * dv.y) * inverseDet;
+
+    // The UV gradients convert the view ray into room coordinates even
+    // when the facade is mirrored or the window is wider than it is tall.
+    float depth = interiorParameters.x;
+    float3 ray = float3(dot(-view, gradientU), dot(-view, gradientV), max(dot(view, normal), 0.0001) / depth);
+    float2 entry = frac(roomUv);
+    float2 wall = step(0.0, ray.xy);
+    float2 wallTime = abs(wall - entry) / max(abs(ray.xy), 0.00001);
+    float hitTime = min(1.0 / ray.z, min(wallTime.x, wallTime.y));
+    float3 hit = saturate(float3(entry, 0) + ray * hitTime);
+
+    // Reproject the box hit from the center of the room where the map was
+    // captured. A flat spheremap lookup alone would not give room parallax.
+    float2 roomSize = rcp(max(float2(length(gradientU), length(gradientV)), 0.015625));
+    float3 fromCenter = (hit - 0.5) * float3(roomSize.x, -roomSize.y, -depth);
+    float4 room = tex2Dlod(interiorTexture, float4(SphereUV(UnitNormal(fromCenter)), 0, 0));
+    return LinearRGB(room.rgb) * (interiorParameters.w + room.a * pbrRender.w);
+}
+
 struct PbrOutput
 {
     float4 color : COLOR0;
@@ -191,8 +226,10 @@ PbrOutput ShadePbr(PixelInput input)
     float ao = packed.r;
     float roughness = clamp(pbrSurface.w ? packed.g : pbrRender.x, 0.045, 1.0);
     float metallic = saturate(pbrSurface.w ? packed.b : pbrRender.y);
-    float3 n = PerturbNormal(input, UnitNormal(input.viewNormal));
     float3 v = UnitNormal(-input.viewPosition);
+    float3 geometricNormal = UnitNormal(input.viewNormal);
+    if (interiorParameters.x > 0.0 && dot(geometricNormal, v) < 0.0) geometricNormal = -geometricNormal;
+    float3 n = PerturbNormal(input, geometricNormal);
     // Integrate the GGX lobe over the variation of the shading normal across
     // a pixel. A polished surface can otherwise produce a subpixel spike.
     float3 normalDx = ddx(n);
@@ -204,9 +241,6 @@ PbrOutput ShadePbr(PixelInput input)
     float2 reflectionDy = ddy(reflectionUv) * environmentSize;
     float footprint = max(dot(reflectionDx, reflectionDx), dot(reflectionDy, reflectionDy));
     float reflectionMip = 0.5 * log2(max(footprint, 1.0));
-    // Keep neighboring lanes available for derivatives at alpha cutouts.
-    if (pbrSurface.z == 1.0) clip(coverage - pbrSurface.y);
-
     float NoV = max(saturate(dot(n, v)), 0.0001);
     float3 f0 = lerp(0.04, albedo, metallic);
     float alpha = roughness * roughness;
@@ -245,18 +279,35 @@ PbrOutput ShadePbr(PixelInput input)
     float3 fallback = radiance * response;
     float3 indirect = fallback + ambient * albedo * (1.0 - environmentF) * (1.0 - metallic) * ao * pbrLighting.z;
     float3 emission = LinearRGB(tex2D(emissiveTexture, input.uv).rgb) * pbrRender.w;
-    float3 color = (direct + indirect + emission) * pbrRender.z;
+    float3 color = direct + indirect + emission;
+    float windowMask = 0.0;
+    [branch] if (interiorParameters.x > 0.0) {
+        windowMask = base.a;
+        float3 room = MappedInterior(input, geometricNormal, v);
+        float glassMip = min(topMip, max(windowGlass.x * topMip, reflectionMip));
+        float3 glassReflection = tex2Dlod(sphereTexture, float4(reflectionUv, 0, glassMip)).rgb;
+        if (materialColorSpace.y) glassReflection = LinearRGB(glassReflection);
+        float fresnel = windowGlass.y + (1.0 - windowGlass.y) * Fresnel(v, n);
+        float3 throughGlass = lerp(room, glassReflection * pbrLighting.z, fresnel);
+        color = lerp(color, throughGlass, windowMask);
+    }
+    // Keep neighboring lanes available for derivatives at alpha cutouts.
+    if (pbrSurface.z == 1.0) clip(coverage - pbrSurface.y);
+    color *= pbrRender.z;
     if (pbrLighting.w == 0.0) color = DisplayRGB(color / (1.0 + color));
 
     float2 oct = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
     if (n.z < 0) oct = (1.0 - abs(oct.yx)) * (oct >= 0 ? 1.0 : -1.0);
     PbrOutput output;
     output.color = float4(color, pbrSurface.z == 2.0 ? coverage : 1.0);
-    output.material = float4(oct, roughness, input.viewPosition.z);
+    // The room and its glass already have lighting and reflection. Keep
+    // their depth but leave these pixels out of the SSR and SSGI resolves.
+    float window = step(0.001, windowMask);
+    output.material = float4(oct, lerp(roughness, 1.0, window), input.viewPosition.z);
     // SSR reconstructs the same Fresnel response from albedo and metalness.
     // SSGI uses that pair to tint the bounce and exclude pure metals.
     output.fallback = float4(fallback * pbrRender.z, ao * pbrLighting.z * pbrRender.z);
-    output.baseReflectance = float4(albedo, metallic);
+    output.baseReflectance = float4(albedo, lerp(metallic, 1.0, window));
     return output;
 }
 
