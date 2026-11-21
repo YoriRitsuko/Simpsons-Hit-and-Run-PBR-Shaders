@@ -545,11 +545,14 @@ BloomOutput RenderBloom(IDirect3DDevice9* device)
                            BloomReduction(source, target))) return {};
     }
 
-    // The streak convolves the quarter-resolution highlight image before the
-    // halo passes blur it in both directions.
-    const auto& source = frame.bloom[bloomStreakLevel].image;
+    // Give the streak a soft vertical profile so it slides between rows as
+    // a highlight moves. Reuse the quarter-resolution halo's scratch target.
+    const auto& streakLevel = frame.bloom[bloomStreakLevel];
     const bool streak = frame.bloomStreakShader.Get() &&
-        DrawBloomPass(device, frame.bloomStreakShader.Get(), source, frame.bloomStreak, {1.0f / source.width});
+        DrawBloomPass(device, frame.bloomConvolution.Get(), streakLevel.image, streakLevel.scratch,
+                      {0.0f, 1.0f / streakLevel.image.height}) &&
+        DrawBloomPass(device, frame.bloomStreakShader.Get(), streakLevel.scratch, frame.bloomStreak,
+                      {1.0f / streakLevel.image.width});
     for (const auto& level : frame.bloom) {
         if (!DrawBloomPass(device, frame.bloomConvolution.Get(), level.image, level.scratch,
                            {1.0f / level.image.width, 0.0f}) ||

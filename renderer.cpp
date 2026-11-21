@@ -731,6 +731,8 @@ public:
         auto* orm = resources.Texture(device, material.orm, BuiltinTexture::White);
         auto* emission = resources.Texture(device, material.emissive, BuiltinTexture::Black);
         if (!albedo || !normal || !environment || !orm || !emission) return false;
+        D3DSURFACE_DESC environmentDesc{};
+        if (FAILED(environment->GetLevelDesc(0, &environmentDesc))) return false;
 
         D3DMATRIX world{}, view{}, projection{};
         if (FAILED(device->GetTransform(D3DTS_WORLD, &world)) ||
@@ -746,8 +748,10 @@ public:
         const float normalScale[4] = {0, 0, 0, material.normalStrength};
         const float lighting[4] = {float(environment->GetLevelCount() - 1), float(lights.count),
                                    environmentStrength, linear ? 1.0f : 0.0f};
-        const float colorSpace[4] = {linear ? 1.0f : 0.0f,
-                                     linear && material.environment.empty() ? 1.0f : 0.0f, 0, 0};
+        const float sampling[2][4] = {
+            {linear ? 1.0f : 0.0f, linear && material.environment.empty() ? 1.0f : 0.0f, 0, 0},
+            {float(environmentDesc.Width), float(environmentDesc.Height), 0, 0},
+        };
         const float surface[4] = {material.opacity, material.alphaCutoff,
                                   static_cast<float>(material.alphaMode), material.orm.empty() ? 0.0f : 1.0f};
         const float options[4] = {material.roughness, material.metallic, material.exposure,
@@ -764,7 +768,7 @@ public:
             FAILED(device->SetPixelShaderConstantF(8, lighting, 1)) ||
             FAILED(device->SetPixelShaderConstantF(9, &lights.directions[0][0], PbrLightLimit)) ||
             FAILED(device->SetPixelShaderConstantF(17, &lights.colors[0][0], PbrLightLimit)) ||
-            FAILED(device->SetPixelShaderConstantF(25, colorSpace, 1))) return false;
+            FAILED(device->SetPixelShaderConstantF(25, &sampling[0][0], 2))) return false;
 
         if (!resources.loggedPbrLights) {
             resources.loggedPbrLights = true;

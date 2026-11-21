@@ -51,11 +51,13 @@ opaque PBR materials. **SSR Ray Steps** defaults to 64 (16–128). **SSR
 Distance (World Units)** defaults to 64 (8–160).
 
 Bloom extracts highlights before HDR exposure, then convolves them at four
-resolutions from half to sixteenth scale for a soft halo. A horizontal
-convolution spreads part of the highlight into a longer streak.
+resolutions from half to sixteenth scale for a soft halo. Bright outliers
+roll off smoothly before they feed the halo and the wider horizontal streak.
+PBR also filters glossy highlights and environment reflections across the
+pixel footprint to reduce shimmer on polished surfaces.
 **Bloom Strength (%)** controls how much highlight light scatters into bloom
-and defaults to 32. **Bloom Streak Mix (%)** controls how much of that bloom
-goes into the streak and defaults to 25. Both range from 0 to 100.
+and defaults to 25. **Bloom Streak Mix (%)** controls how much of that bloom
+goes into the streak and defaults to 15. Both range from 0 to 100.
 Set the streak mix to 0 for a halo alone.
 
 **Vignette** dims the gameplay image toward the corners with a soft,

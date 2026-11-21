@@ -34,6 +34,10 @@ float3 ExtractBloom(float3 color)
     float brightness = max(color.r, max(color.g, color.b));
     float knee = saturate(brightness - 0.5);
     float contribution = max(brightness - 1.0, knee * knee * 0.5);
+    // Roll off the light scattered by very bright texels. Unresolved
+    // specular peaks can otherwise dominate the bloom as they cross pixels.
+    float excess = max(contribution - 2.0, 0.0);
+    contribution = min(contribution, 2.0) + 4.0 * excess / (4.0 + excess);
     return color * (contribution / max(brightness, 0.0001));
 }
 

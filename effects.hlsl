@@ -58,6 +58,7 @@ float4 pbrLighting : register(c8);
 float4 pbrLightDirections[8] : register(c9);
 float4 pbrLightColors[8] : register(c17);
 float4 materialColorSpace : register(c25);
+float2 environmentSize : register(c26);
 
 float3 LinearRGB(float3 color);
 
@@ -184,7 +185,6 @@ PbrOutput ShadePbr(PixelInput input)
 {
     float4 base = tex2D(albedoTexture, input.uv);
     float coverage = saturate(base.a * pbrSurface.x);
-    if (pbrSurface.z == 1.0) clip(coverage - pbrSurface.y);
 
     float3 albedo = LinearRGB(base.rgb);
     float3 packed = tex2D(ormTexture, input.uv).rgb;
@@ -193,10 +193,24 @@ PbrOutput ShadePbr(PixelInput input)
     float metallic = saturate(pbrSurface.w ? packed.b : pbrRender.y);
     float3 n = PerturbNormal(input, UnitNormal(input.viewNormal));
     float3 v = UnitNormal(-input.viewPosition);
+    // Integrate the GGX lobe over the variation of the shading normal across
+    // a pixel. A polished surface can otherwise produce a subpixel spike.
+    float3 normalDx = ddx(n);
+    float3 normalDy = ddy(n);
+    float variance = 0.5 * (dot(normalDx, normalDx) + dot(normalDy, normalDy));
+    float3 reflected = mul(reflect(-v, n), worldFromView);
+    float2 reflectionUv = SphereUV(reflected);
+    float2 reflectionDx = ddx(reflectionUv) * environmentSize;
+    float2 reflectionDy = ddy(reflectionUv) * environmentSize;
+    float footprint = max(dot(reflectionDx, reflectionDx), dot(reflectionDy, reflectionDy));
+    float reflectionMip = 0.5 * log2(max(footprint, 1.0));
+    // Keep neighboring lanes available for derivatives at alpha cutouts.
+    if (pbrSurface.z == 1.0) clip(coverage - pbrSurface.y);
+
     float NoV = max(saturate(dot(n, v)), 0.0001);
     float3 f0 = lerp(0.04, albedo, metallic);
     float alpha = roughness * roughness;
-    float alphaSquared = alpha * alpha;
+    float alphaSquared = saturate(alpha * alpha + min(variance, 0.02));
     float3 direct = 0.0;
     [loop]
     for (int index = 0; index < (int)pbrLighting.y; ++index) {
@@ -216,10 +230,10 @@ PbrOutput ShadePbr(PixelInput input)
         }
     }
 
-    float3 reflected = mul(reflect(-v, n), worldFromView);
     float3 normalWorld = mul(n, worldFromView);
     float topMip = pbrLighting.x;
-    float3 radiance = tex2Dlod(sphereTexture, float4(SphereUV(reflected), 0, roughness * topMip)).rgb;
+    float mip = min(topMip, max(roughness * topMip, reflectionMip));
+    float3 radiance = tex2Dlod(sphereTexture, float4(reflectionUv, 0, mip)).rgb;
     float3 ambient = tex2Dlod(sphereTexture, float4(SphereUV(normalWorld), 0, topMip)).rgb;
     if (materialColorSpace.y) {
         radiance = LinearRGB(radiance);

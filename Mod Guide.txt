@@ -135,12 +135,13 @@ therefore stacks with HDR Exposure. Each control ranges from 25% to 400%,
 with 100% as the default. Bloom extraction keeps a scene-linear threshold.
 
 Bloom thresholds the unexposed HDR scene with a soft knee around 1.0.
-It applies a normalized separable convolution from half to sixteenth
-resolution for the halo. A separate horizontal exponential kernel
-creates streaks from the quarter-resolution highlights. Bloom Strength
+An upper rolloff limits the glare cast by very bright pixels. A normalized
+separable convolution from half to sixteenth resolution builds the halo.
+A horizontal exponential kernel builds the streak from vertically
+filtered quarter-resolution highlights. Bloom Strength
 (%) controls how much highlight radiance scatters into the halo and
-streak (0–100, default 32). Bloom Streak Mix (%) controls the share
-that goes into the streak (0–100, default 25). Raise EmissiveStrength to
+streak (0–100, default 25). Bloom Streak Mix (%) controls the share
+that goes into the streak (0–100, default 15). Raise EmissiveStrength to
 drive stronger glow while keeping the map's color.
 
 Vignette dims the corners before tone mapping and keeps the falloff

@@ -23,8 +23,8 @@ struct PostSettings {
     unsigned aoStrength = 100;
     unsigned exposure = 100;
     unsigned skyBrightness = 100;
-    unsigned bloomStrength = 32;
-    unsigned bloomStreakMix = 25;
+    unsigned bloomStrength = 25;
+    unsigned bloomStreakMix = 15;
     unsigned vignetteStrength = 30;
     ToneMapper toneMapper = ToneMapper::Aces13;
 };
