@@ -13,9 +13,11 @@ end
 local level = payload(path)
 if not level then return end
 local resources = GetModPath() .. "/Resources/"
+local materials = payload(resources .. "PBRMaterials.p3d") or ""
 local preview = payload(resources .. "PBRPreview.p3d") or ""
 local interior = payload(resources .. "PBRInterior.p3d") or ""
 if #preview + #interior == 0 then return end
 
 -- Append the authored props to the player's stock Level 1 zone.
-Output(header .. string.pack("<I4", 12 + #level + #preview + #interior) .. level .. preview .. interior)
+Output(header .. string.pack("<I4", 12 + #level + #materials + #preview + #interior) ..
+       level .. materials .. preview .. interior)

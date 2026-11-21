@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <cwchar>
+#include <new>
 #include <unordered_map>
 
 namespace {
@@ -12,6 +13,9 @@ namespace {
 std::wstring directory;
 wchar_t logPath[MAX_PATH]{};
 std::unordered_map<std::string, Material> configured;
+std::unordered_map<std::string, Material> packagedMaterials;
+std::unordered_map<std::wstring, std::vector<uint8_t>> packagedAssets;
+std::vector<std::wstring> loadedPackages;
 std::unordered_map<void*, const Material*> materials;
 SRWLOCK materialLock = SRWLOCK_INIT;
 const Material transparentSphere = [] {
@@ -62,44 +66,78 @@ bool SafeTextureFilename(const std::wstring& name, const wchar_t* extension)
     return dot != std::wstring::npos && _wcsicmp(name.c_str() + dot, extension) == 0;
 }
 
-std::wstring TextureSetting(const std::wstring& ini, const wchar_t* section,
-                            const wchar_t* key, const wchar_t* extension = L".tga")
+template<class Read>
+std::wstring TextureSetting(const Read& read, const wchar_t* key, const wchar_t* extension = L".tga")
 {
-    auto name = IniValue(ini, section, key, L"");
+    auto name = read(key, L"");
     return SafeTextureFilename(name, extension) ? name : std::wstring{};
 }
 
-void LoadPbr(Material& material, const std::wstring& ini, const wchar_t* section)
+template<class Read>
+void LoadPbr(Material& material, const Read& read)
 {
-    material.baseColor = TextureSetting(ini, section, L"BaseColor");
-    material.orm = TextureSetting(ini, section, L"ORM");
-    material.emissive = TextureSetting(ini, section, L"EmissiveMap");
-    material.environment = TextureSetting(ini, section, L"Environment", L".dds");
-    const auto alpha = IniValue(ini, section, L"AlphaMode", L"Opaque");
+    material.baseColor = TextureSetting(read, L"BaseColor");
+    material.orm = TextureSetting(read, L"ORM");
+    material.emissive = TextureSetting(read, L"EmissiveMap");
+    material.environment = TextureSetting(read, L"Environment", L".dds");
+    const auto alpha = read(L"AlphaMode", L"Opaque");
     if (!_wcsicmp(alpha.c_str(), L"Mask")) material.alphaMode = AlphaMode::Mask;
     else if (!_wcsicmp(alpha.c_str(), L"Blend")) material.alphaMode = AlphaMode::Blend;
-    material.opacity = ParseFloat(IniValue(ini, section, L"Opacity", L""), 1.0f, 1.0f);
-    material.alphaCutoff = ParseFloat(IniValue(ini, section, L"AlphaCutoff", L""), 0.5f, 1.0f);
-    material.roughness = ParseFloat(IniValue(ini, section, L"Roughness", L""), 0.5f, 1.0f);
-    material.metallic = ParseFloat(IniValue(ini, section, L"Metallic", L""), 0.0f, 1.0f);
-    material.exposure = ParseFloat(IniValue(ini, section, L"Exposure", L""), 1.0f, 8.0f);
-    material.directLightStrength = ParseFloat(IniValue(ini, section, L"DirectLightStrength", L""), 1.0f, 8.0f);
-    material.environmentStrength = ParseFloat(IniValue(ini, section, L"EnvironmentStrength", L""), 1.0f, 8.0f);
-    material.emissiveStrength = ParseFloat(IniValue(ini, section, L"EmissiveStrength", L""), 1.0f, 16.0f);
+    material.opacity = ParseFloat(read(L"Opacity", L""), 1.0f, 1.0f);
+    material.alphaCutoff = ParseFloat(read(L"AlphaCutoff", L""), 0.5f, 1.0f);
+    material.roughness = ParseFloat(read(L"Roughness", L""), 0.5f, 1.0f);
+    material.metallic = ParseFloat(read(L"Metallic", L""), 0.0f, 1.0f);
+    material.exposure = ParseFloat(read(L"Exposure", L""), 1.0f, 8.0f);
+    material.directLightStrength = ParseFloat(read(L"DirectLightStrength", L""), 1.0f, 8.0f);
+    material.environmentStrength = ParseFloat(read(L"EnvironmentStrength", L""), 1.0f, 8.0f);
+    material.emissiveStrength = ParseFloat(read(L"EmissiveStrength", L""), 1.0f, 16.0f);
 }
 
-void LoadInterior(Material& material, const std::wstring& ini, const wchar_t* section)
+template<class Read>
+void LoadInterior(Material& material, const Read& read)
 {
     material.alphaMode = AlphaMode::Opaque;
-    material.interiorMap = TextureSetting(ini, section, L"InteriorMap");
-    material.interiorDepth = std::max(0.05f, ParseFloat(IniValue(ini, section, L"InteriorDepth", L""), 3.0f, 30.0f));
+    material.interiorMap = TextureSetting(read, L"InteriorMap");
+    material.interiorDepth = std::max(0.05f, ParseFloat(read(L"InteriorDepth", L""), 3.0f, 30.0f));
     material.interiorTiles = {
-        std::max(1.0f, std::round(ParseFloat(IniValue(ini, section, L"InteriorTilesU", L""), 1.0f, 32.0f))),
-        std::max(1.0f, std::round(ParseFloat(IniValue(ini, section, L"InteriorTilesV", L""), 1.0f, 32.0f))),
+        std::max(1.0f, std::round(ParseFloat(read(L"InteriorTilesU", L""), 1.0f, 32.0f))),
+        std::max(1.0f, std::round(ParseFloat(read(L"InteriorTilesV", L""), 1.0f, 32.0f))),
     };
-    material.interiorBrightness = ParseFloat(IniValue(ini, section, L"InteriorBrightness", L""), 1.0f, 8.0f);
-    material.glassRoughness = ParseFloat(IniValue(ini, section, L"GlassRoughness", L""), 0.08f, 1.0f);
-    material.glassReflectance = ParseFloat(IniValue(ini, section, L"GlassReflectance", L""), 0.06f, 1.0f);
+    material.interiorBrightness = ParseFloat(read(L"InteriorBrightness", L""), 1.0f, 8.0f);
+    material.glassRoughness = ParseFloat(read(L"GlassRoughness", L""), 0.08f, 1.0f);
+    material.glassReflectance = ParseFloat(read(L"GlassReflectance", L""), 0.06f, 1.0f);
+}
+
+template<class Read>
+bool ReadMaterial(Material& material, const Read& read, const char* name)
+{
+    const auto mode = read(L"Mode", L"");
+    if (!_wcsicmp(mode.c_str(), L"Paint")) material.mode = MaterialMode::Paint;
+    else if (!_wcsicmp(mode.c_str(), L"PBR")) material.mode = MaterialMode::Pbr;
+    else if (!_wcsicmp(mode.c_str(), L"Interior")) material.mode = MaterialMode::Interior;
+    else if (_wcsicmp(mode.c_str(), L"Glass")) return false;
+
+    material.normalMap = TextureSetting(read, L"NormalMap");
+    material.sphereMap = TextureSetting(read, L"SphereMap");
+    material.useGameSphere = material.mode == MaterialMode::Glass && material.sphereMap.empty();
+    const auto color = read(L"PaintColour", L"FFFFFF");
+    if (color.size() == 6 && color.find_first_not_of(L"0123456789ABCDEFabcdef") == std::wstring::npos) {
+        const auto rgb = std::wcstoul(color.c_str(), nullptr, 16);
+        for (unsigned index = 0; index < 3; ++index)
+            material.paint[index] = static_cast<float>((rgb >> (16 - 8 * index)) & 255) / 255.0f;
+    }
+    material.reflection = ParseFloat(read(L"Reflection", L""), 0.55f, 2.0f);
+    material.normalStrength = ParseFloat(read(L"NormalStrength", L""), 1.0f, 4.0f);
+    material.maskSet = read(L"MaskSet", L"0") == L"1" ? 1 : 0;
+    if (material.mode == MaterialMode::Pbr || material.mode == MaterialMode::Interior) LoadPbr(material, read);
+    if (material.mode == MaterialMode::Interior) {
+        LoadInterior(material, read);
+        if (material.baseColor.empty() || material.interiorMap.empty()) {
+            ShaderLog("Interior materials need BaseColor and InteriorMap: ", name);
+            return false;
+        }
+    }
+    return true;
 }
 
 void LoadConfig()
@@ -112,37 +150,186 @@ void LoadConfig()
     for (const wchar_t* section = sections; *section; section += wcslen(section) + 1) {
         char name[256];
         if (!WideCharToMultiByte(CP_ACP, 0, section, -1, name, sizeof(name), nullptr, nullptr)) continue;
-        const auto mode = IniValue(ini, section, L"Mode", L"");
         Material material;
-        if (!_wcsicmp(mode.c_str(), L"Paint")) material.mode = MaterialMode::Paint;
-        else if (!_wcsicmp(mode.c_str(), L"PBR")) material.mode = MaterialMode::Pbr;
-        else if (!_wcsicmp(mode.c_str(), L"Interior")) material.mode = MaterialMode::Interior;
-        else if (_wcsicmp(mode.c_str(), L"Glass")) continue;
-
-        material.normalMap = TextureSetting(ini, section, L"NormalMap");
-        material.sphereMap = TextureSetting(ini, section, L"SphereMap");
-        material.useGameSphere = material.mode == MaterialMode::Glass && material.sphereMap.empty();
-        const auto color = IniValue(ini, section, L"PaintColour", L"FFFFFF");
-        if (color.size() == 6 && color.find_first_not_of(L"0123456789ABCDEFabcdef") == std::wstring::npos) {
-            const auto rgb = std::wcstoul(color.c_str(), nullptr, 16);
-            for (unsigned index = 0; index < 3; ++index) {
-                material.paint[index] = static_cast<float>((rgb >> (16 - 8 * index)) & 255) / 255.0f;
-            }
-        }
-        material.reflection = ParseFloat(IniValue(ini, section, L"Reflection", L""), 0.55f, 2.0f);
-        material.normalStrength = ParseFloat(IniValue(ini, section, L"NormalStrength", L""), 1.0f, 4.0f);
-        material.maskSet = IniValue(ini, section, L"MaskSet", L"0") == L"1" ? 1 : 0;
-        if (material.mode == MaterialMode::Pbr || material.mode == MaterialMode::Interior)
-            LoadPbr(material, ini, section);
-        if (material.mode == MaterialMode::Interior) {
-            LoadInterior(material, ini, section);
-            if (material.baseColor.empty() || material.interiorMap.empty()) {
-                ShaderLog("Interior materials need BaseColor and InteriorMap: ", name);
-                continue;
-            }
-        }
-        configured.emplace(Lower(name), std::move(material));
+        const auto read = [&](const wchar_t* key, const wchar_t* fallback) {
+            return IniValue(ini, section, key, fallback);
+        };
+        if (ReadMaterial(material, read, name)) configured.emplace(Lower(name), std::move(material));
     }
+}
+
+constexpr uint32_t materialChunk = 0x44524250; // PBRD
+constexpr uint32_t materialVersion = 1;
+constexpr unsigned maxPackageBytes = 64u * 1024 * 1024;
+constexpr unsigned packageIdBytes = 16;
+
+struct PackageReader {
+    const uint8_t* cursor;
+    const uint8_t* end;
+
+    const uint8_t* Take(size_t size)
+    {
+        if (size > static_cast<size_t>(end - cursor)) return nullptr;
+        const auto* data = cursor;
+        cursor += size;
+        return data;
+    }
+
+    template<class T>
+    bool Number(T& value)
+    {
+        const auto* data = Take(sizeof(value));
+        if (!data) return false;
+        memcpy(&value, data, sizeof(value));
+        return true;
+    }
+
+    bool Text(std::string& value)
+    {
+        uint16_t size;
+        if (!Number(size) || !size || size >= 256) return false;
+        const auto* data = Take(size);
+        if (!data || memchr(data, 0, size)) return false;
+        value.assign(reinterpret_cast<const char*>(data), size);
+        return true;
+    }
+};
+
+std::wstring WideText(const std::string& value)
+{
+    wchar_t output[256];
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+                                           output, static_cast<int>(std::size(output)));
+    return std::wstring(output, length);
+}
+
+bool ReadMaterialPackage(const std::vector<uint8_t>& bytes)
+{
+    PackageReader reader{bytes.data(), bytes.data() + bytes.size()};
+    uint32_t version, assetCount, materialCount;
+    if (!reader.Number(version) || version != materialVersion) return false;
+    const auto* id = reader.Take(packageIdBytes);
+    if (!id || !reader.Number(assetCount) || !reader.Number(materialCount) ||
+        assetCount > 256 || !materialCount || materialCount > 256) return false;
+    std::wstring prefix = L":pbr/";
+    constexpr wchar_t digits[] = L"0123456789abcdef";
+    for (unsigned i = 0; i < packageIdBytes; ++i) {
+        prefix += digits[id[i] >> 4];
+        prefix += digits[id[i] & 15];
+    }
+    prefix += L'/';
+    AcquireSRWLockShared(&materialLock);
+    const bool known = std::find(loadedPackages.begin(), loadedPackages.end(), prefix) != loadedPackages.end();
+    ReleaseSRWLockShared(&materialLock);
+    if (known) return true;
+
+    decltype(packagedAssets) assets;
+    decltype(packagedMaterials) entries;
+    for (unsigned i = 0; i < assetCount; ++i) {
+        uint32_t size;
+        std::string filename;
+        if (!reader.Text(filename) || !reader.Number(size) || size < 18) return false;
+        const auto* data = reader.Take(size);
+        const auto name = WideText(Lower(filename));
+        if (!data || !(SafeTextureFilename(name, L".tga") || SafeTextureFilename(name, L".dds")) ||
+            !assets.try_emplace(prefix + name, data, data + size).second) return false;
+    }
+    for (unsigned i = 0; i < materialCount; ++i) {
+        uint32_t count;
+        std::string name;
+        std::unordered_map<std::wstring, std::wstring> settings;
+        if (!reader.Text(name) || !reader.Number(count) || !count || count > 32) return false;
+        for (unsigned field = 0; field < count; ++field) {
+            std::string key, value;
+            if (!reader.Text(key) || !reader.Text(value)) return false;
+            const auto wideValue = WideText(value);
+            if (wideValue.empty() || !settings.try_emplace(WideText(Lower(key)), wideValue).second) return false;
+        }
+        const auto read = [&](const wchar_t* key, const wchar_t* fallback) {
+            std::wstring lower = key;
+            for (auto& ch : lower) {
+                if (ch >= L'A' && ch <= L'Z') ch += L'a' - L'A';
+            }
+            const auto found = settings.find(lower);
+            return found == settings.end() ? std::wstring(fallback) : found->second;
+        };
+        Material material;
+        if (!ReadMaterial(material, read, name.c_str())) return false;
+        for (auto* filename : {&material.baseColor, &material.normalMap, &material.orm, &material.emissive,
+                               &material.sphereMap, &material.environment, &material.interiorMap}) {
+            if (filename->empty()) continue;
+            for (auto& ch : *filename) {
+                if (ch >= L'A' && ch <= L'Z') ch += L'a' - L'A';
+            }
+            filename->insert(0, prefix);
+            if (assets.find(*filename) == assets.end()) return false;
+        }
+        if (!entries.try_emplace(Lower(name), std::move(material)).second) return false;
+    }
+    if (reader.cursor != reader.end) return false;
+
+    {
+        AcquireSRWLockExclusive(&materialLock);
+        struct Unlock { ~Unlock() { ReleaseSRWLockExclusive(&materialLock); } } unlock;
+        if (std::find(loadedPackages.begin(), loadedPackages.end(), prefix) != loadedPackages.end()) return true;
+        packagedAssets.reserve(packagedAssets.size() + assets.size());
+        packagedMaterials.reserve(packagedMaterials.size() + entries.size());
+        loadedPackages.push_back(prefix);
+        packagedAssets.merge(assets);
+        packagedMaterials.merge(entries);
+    }
+    ShaderLog("Loaded material settings and maps from a Pure3D package.");
+    return true;
+}
+
+struct ChunkHeader {
+    uint32_t id, headerSize, chunkSize, start;
+};
+
+unsigned __fastcall BeginMaterialChunk(void* stream, void*)
+{
+    using Begin = unsigned (__thiscall*)(void*);
+    const auto begin = reinterpret_cast<Begin>(0x574650);
+    const auto id = begin(stream);
+    if (id != materialChunk) return id;
+
+    // This call site begins a top-level child. Keep reads inside both the
+    // material chunk and the enclosing file before the engine skips it.
+    const auto* data = static_cast<const uint8_t*>(stream);
+    const auto* chunks = reinterpret_cast<const ChunkHeader*>(data + 0x0c);
+    const auto& parent = chunks[0];
+    const auto& chunk = chunks[1];
+    if (*reinterpret_cast<const int*>(data + 0x20c) != 1 || chunk.headerSize < 12 ||
+        chunk.headerSize != chunk.chunkSize || chunk.headerSize - 12 > maxPackageBytes ||
+        chunk.start < parent.start || uint64_t(chunk.start) + chunk.chunkSize > uint64_t(parent.start) + parent.chunkSize)
+        return id;
+    try {
+        std::vector<uint8_t> bytes(chunk.headerSize - 12);
+        using Read = bool (__thiscall*)(void*, void*, unsigned, unsigned);
+        const auto read = reinterpret_cast<Read>(0x574990);
+        if (bytes.size() < 28 || !read(stream, bytes.data(), static_cast<unsigned>(bytes.size()), 1) ||
+            !ReadMaterialPackage(bytes)) ShaderLog("Skipped an invalid Pure3D material package.");
+    } catch (const std::bad_alloc&) {
+        ShaderLog("Not enough memory for the Pure3D material package.");
+    }
+    return id;
+}
+
+void InstallMaterialPackageHook()
+{
+    auto* site = reinterpret_cast<uint8_t*>(0x573044);
+    const uint8_t expected[] = {0xe8, 0x07, 0x16, 0, 0};
+    DWORD protection;
+    if (memcmp(site, expected, sizeof(expected)) != 0 ||
+        !VirtualProtect(site, sizeof(expected), PAGE_EXECUTE_READWRITE, &protection)) {
+        ShaderLog("The Pure3D material package hook is unavailable.");
+        return;
+    }
+    const auto relative = uint32_t(reinterpret_cast<uintptr_t>(&BeginMaterialChunk) -
+                                   reinterpret_cast<uintptr_t>(site + sizeof(expected)));
+    memcpy(site + 1, &relative, sizeof(relative));
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(expected));
+    VirtualProtect(site, sizeof(expected), protection, &protection);
 }
 
 bool DemoRequested()
@@ -301,13 +488,18 @@ extern "C" void RecordMaterial(void* material, const char* name, const char* typ
     static_assert(sizeof(void*) == 4);
     auto* shader = *reinterpret_cast<void**>(static_cast<uint8_t*>(material) + 0x14);
     if (!shader) return;
-    const auto match = configured.find(Lower(name));
-    if (match != configured.end()) {
-        const Material& selected = match->second;
-        if (selected.mode == MaterialMode::Paint && (_stricmp(type, "simple") &&
+    const auto key = Lower(name);
+    AcquireSRWLockShared(&materialLock);
+    const auto packaged = packagedMaterials.find(key);
+    const auto match = configured.find(key);
+    const Material* selected = packaged != packagedMaterials.end() ? &packaged->second :
+                               match != configured.end() ? &match->second : nullptr;
+    ReleaseSRWLockShared(&materialLock);
+    if (selected) {
+        if (selected->mode == MaterialMode::Paint && (_stricmp(type, "simple") &&
             _stricmp(type, "spheremap") && _stricmp(type, "environment"))) return;
         AcquireSRWLockExclusive(&materialLock);
-        materials[shader] = &selected;
+        materials[shader] = selected;
         InstallRenderHook();
         ReleaseSRWLockExclusive(&materialLock);
         ShaderLog("Selected material ", name);
@@ -385,6 +577,7 @@ bool InitializeMaterials()
             FlushInstructionCache(GetCurrentProcess(), where, patch.size);
         }
         ShaderLog("Installed retail Pure3D material hooks.");
+        InstallMaterialPackageHook();
     }
     while (writable) {
         const auto& patch = patches[--writable];
@@ -395,7 +588,6 @@ bool InitializeMaterials()
 }
 
 const Material* ActiveMaterial() { return active; }
-const std::wstring& MaterialDirectory() { return directory; }
 
 void ShaderLog(const char* message, const char* material)
 {
@@ -413,7 +605,14 @@ void ShaderLog(const char* message, const char* material)
 namespace {
 std::vector<uint8_t> ReadTextureFile(const std::wstring& filename)
 {
-    const auto path = MaterialDirectory() + filename;
+    if (filename.rfind(L":pbr/", 0) == 0) {
+        AcquireSRWLockShared(&materialLock);
+        const auto found = packagedAssets.find(filename);
+        const auto* bytes = found != packagedAssets.end() ? &found->second : nullptr;
+        ReleaseSRWLockShared(&materialLock);
+        return bytes ? *bytes : std::vector<uint8_t>{};
+    }
+    const auto path = directory + filename;
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {};

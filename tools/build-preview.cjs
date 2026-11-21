@@ -2,6 +2,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { prefilterEnvironment } = require("./prefilter-environment.cjs");
+const { readMaterials, packMaterials, writePackage } = require("./pack-materials.cjs");
+const { encodeTga } = require("./targa.cjs");
 
 function paeth(a, b, c) {
     const p = a + b - c;
@@ -49,19 +51,8 @@ function readPng(filename) {
     return { width, height, pixels };
 }
 
-function writeTga(filename, { width, height, pixels }) {
-    const header = Buffer.alloc(18);
-    header[2] = 2;
-    header.writeUInt16LE(width, 12);
-    header.writeUInt16LE(height, 14);
-    header[16] = 32;
-    header[17] = 0x28;
-    const bgr = Buffer.from(pixels);
-    for (let i = 0; i < bgr.length; i += 4) {
-        bgr[i] = pixels[i + 2];
-        bgr[i + 2] = pixels[i];
-    }
-    fs.writeFileSync(filename, Buffer.concat([header, bgr]));
+function writeTga(filename, image) {
+    fs.writeFileSync(filename, encodeTga(image));
 }
 
 function packTextures(input, output, material, prefix) {
@@ -317,13 +308,32 @@ function interiorDemo(output) {
 }
 
 const [input, output, overrideTextures] = process.argv.slice(2);
-if (!input || !output) throw new Error("Usage: node build-preview.cjs EXTRACTED_MATERIAL_PREVIEW|--interior OUTPUT_FOLDER [TEXTURE_FOLDER]");
+if (!input || !output) throw new Error("Usage: node build-preview.cjs EXTRACTED_MATERIAL_PREVIEW|--interior|--pack-demo OUTPUT_FOLDER [TEXTURE_FOLDER]");
+
+function packDemo(textureDir) {
+    fs.mkdirSync(output, { recursive: true });
+    const targets = [["demo-materials.ini", "PBRMaterials.p3d"], ["demo-sedan.ini", "PBRSedanMaterials.p3d"]];
+    for (const [config, filename] of targets) {
+        const materials = readMaterials(path.join(__dirname, config));
+        const packed = packMaterials(materials, name => {
+            const map = path.join(textureDir, name);
+            return fs.readFileSync(fs.existsSync(map) ? map : path.join(__dirname, "..", "resources", name));
+        });
+        writePackage(path.join(output, filename), packed);
+    }
+}
+
 if (input === "--interior") {
     interiorDemo(output);
     return;
 }
+if (input === "--pack-demo") {
+    if (!overrideTextures) throw new Error("--pack-demo expects the demo's source maps folder");
+    packDemo(overrideTextures);
+    return;
+}
 const sourceTextures = overrideTextures || path.join(input, "MaterialPreviewMesh_Textures");
-const textureDir = path.join(output, "VehicleShaders");
+const textureDir = path.join(output, "AuthoringMaps");
 fs.mkdirSync(textureDir, { recursive: true });
 const meshes = readObj(path.join(input, "MaterialPreviewMesh.obj"));
 const parts = [
@@ -342,3 +352,4 @@ bounceDemo(chunks, textureDir);
 prefilterEnvironment(path.join(input, "Panorama_MirrorBall_Spheremap.hdr"),
                      path.join(textureDir, "preview-environment.dds"));
 fs.writeFileSync(path.join(output, "PBRPreview.p3d"), chunk(0xff443350, Buffer.alloc(0), chunks));
+packDemo(textureDir);

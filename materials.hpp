@@ -53,7 +53,6 @@ struct EnvironmentMap {
 
 bool InitializeMaterials();
 const Material* ActiveMaterial();
-const std::wstring& MaterialDirectory();
 Image ReadTarga(const std::wstring& filename);
 EnvironmentMap ReadEnvironment(const std::wstring& filename);
 void ShaderLog(const char* message, const char* material = "");

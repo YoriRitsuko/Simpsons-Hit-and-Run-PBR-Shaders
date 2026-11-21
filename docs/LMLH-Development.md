@@ -1,6 +1,10 @@
-# Working on the launcher hack
+# Build and test the launcher hack
 
-PBR Shaders 3.6 was built on Windows with LLVM-MinGW 20260324 (x86 target) and `fxc.exe` from Windows SDK 10.0.26100.0. The test setup uses Lucas Mod Launcher **1.27.1** and an English retail PC copy of the game. Use a separate game and launcher directory for testing. Copy the complete launcher distribution, including the shipped framework files under `Mods`, to avoid missing-framework dialogs during command-line builds. The game executable's SHA-256 in that setup is:
+The working setup is Windows, LLVM-MinGW 20260324 targeting x86, and
+`fxc.exe` from Windows SDK 10.0.26100.0. Keep a separate copy of the game and
+of Lucas Mod Launcher **1.27.1** for tests. Copy the launcher's framework
+files under `Mods` too so command-line builds can find them. The English
+retail executable used for tests has this SHA-256.
 
 ```text
 2928118887B910AE03CE714E287D9BC67FB95F29E1B4F1271B8AF389990C0795
@@ -14,11 +18,15 @@ The native hook addresses refer to that retail executable. The older Visual Stud
 | --- | --- |
 | `PBR Shaders.lmlh` | A 32-bit Windows DLL with launcher metadata in the `META.INI` resource. Put it in `Hacks` beside Lucas. |
 | `PBR Shader Demo.lmlm` | A compiled launcher mod. Put it in `Mods` and enable it in **General**. The folder under `package` is its editable source. |
-| `VehicleShaders/` | Loose textures and the optional `VehicleShaders.ini` beside `Simpsons.exe`. The native loader reads these directly. |
+| `PBRMaterials.p3d` and `PBRSedanMaterials.p3d` | The demo's packed maps and per-material settings. The Lua handlers attach them before the shaders that use them. Both ship inside the LMLM. |
 
 `HackMeta.ini` is the hack's metadata source. `hack.rc` embeds it, the license, and the ACES LUT. The launcher calls the exported `HackEntryPoint` at install-hacks event `1`. The x86 build has to export the name `HackEntryPoint`, which you can check with `llvm-objdump -p`.
 
-`InternalName=VehicleShaders` is the stable name for dependencies and saved settings. `Mod=1` and `Setting=1` put the hack on the **Settings** tab. `RequiredHack=Direct3D9` loads Lucas's D3D9 support. The demo uses `General=1` and requires both `VehicleShaders` and `CustomFiles`. It supplies the `VEHICLE_SHADERS_DEMO` command-line switch so the hack can load its demo materials on demand.
+`VehicleShaders` was the car-only name. Keep it as the internal ID so
+Lucas finds the same dependencies and saved settings. The launcher displays
+**PBR Shaders** under **Settings**. The demo appears under **General** and
+uses Custom Files to load its assets from the LMLM. The old command-line
+switch and loose material folder are still handled for legacy mods.
 
 `Title` is the display name. `Name` in each `[Setting]` section is the saved key. When adding a control, update the metadata and its native reader together. The native settings lookup in `ReadPbrSettings` is specific to the tested `Hacks.dll`. The code checks the PE timestamp and image size, checks the address behind export ordinal `2560`, and reads tickboxes, integer values, and multiple-choice indices at offset `0x188`. It falls back to the C++ defaults if those checks fail. When porting to a new launcher, verify that lookup and its value layout before trusting the UI state. [Launcher mod settings reference](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Mods/ConfiguringMods)
 
@@ -37,9 +45,26 @@ Start-Process -FilePath $launcher -WorkingDirectory (Split-Path $launcher) -Wait
 
 The demo uses Custom Files path handlers to append the original preview mesh to `art/l1z1.p3d` and add a reflection parameter to the stock Family Sedan windshield. The Lua reads those assets from the player's installation. Use the stock Level 1 zone and sedan to test those handlers. `Debug Custom Files Output` can help inspect their in-memory output. [Path handlers](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Hacks/CustomFiles/PathHandlerScripts) · [Debug Custom Files Output](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Hacks/DebugCustomFilesOutput)
 
-The generated `PBRPreview.p3d` is checked in so the demo can be compiled from the checkout. The built demo needs its texture folder from the release bundle. To regenerate the mesh and textures together, use `tools/build-preview.cjs` with the original `MaterialPreviewMesh.zip` and `MaterialPreviewMeshShiny_Textures.zip` authoring inputs as described in the README. Keep the preview mesh and textures from the same generation.
+You can compile the demo straight from the checkout. To rebuild its preview
+mesh and material packages, extract `MaterialPreviewMesh.zip` and
+`MaterialPreviewMeshShiny_Textures.zip`. Run
+`node tools/build-preview.cjs <preview-folder> <output-folder> <shiny-textures-folder>`
+with Node 22 or newer. Copy the resulting preview model and both material
+packages into the demo's `Resources`. The output's `AuthoringMaps` folder
+is scratch space for intermediate maps.
 
-The distribution ZIP contains the hack at `Hacks/PBR Shaders.lmlh`, the optional demo at `Mods/PBR Shader Demo.lmlm`, the demo texture folder, the example INI, and the guides. The source ZIP contains the tracked repository files. Keep `Release/`, local launcher settings, and retail game files outside the Git history. Git pins source text to LF because `windres` embeds the metadata and license bytes verbatim.
+If you already have the preview maps, use
+`node tools/build-preview.cjs --pack-demo <output-folder> <maps-folder>`.
+Edit `tools/demo-materials.ini` and `tools/demo-sedan.ini` to change the
+demo settings. To change the interior fixture, generate it with
+`node tools/build-preview.cjs --interior <output-folder>`, update the
+preview room maps and model, then run `--pack-demo` again.
+
+The player package needs `Hacks/PBR Shaders.lmlh`, the optional
+`Mods/PBR Shader Demo.lmlm`, and the guide. The GUI and CLI packers are
+authoring tools in the source checkout. Keep `Release/`, launcher settings,
+and retail game files out of Git. Source files use LF because `windres`
+embeds the metadata and license bytes verbatim.
 
 To check a release, extract both ZIPs, verify the bundled DLL and demo hashes against the tested copies, then rebuild the LMLH from the extracted source on the same toolchain. When comparing rebuilt PE files, the four-byte COFF timestamp is at `e_lfanew + 8`, where `e_lfanew` is the little-endian value at file offset `0x3c`. Normalize just those four bytes for a rebuild comparison.
 
@@ -58,7 +83,7 @@ Start-Process -FilePath $launcher -WorkingDirectory (Split-Path $launcher) `
 | Check | What to look for |
 | --- | --- |
 | Hack missing from the launcher | Use the launcher's `Hacks` location, check the embedded metadata, reload the list, and look under **Settings**. The compiled demo is under **General**. |
-| Material setup | Look for `Installed retail Pure3D material hooks`, `Connected to the launcher's Direct3D 9 factory`, and `Selected material`. Check whether the log reports an incompatible vertex stream or a failed texture upload. |
+| Material setup | Look for `Loaded material settings and maps from a Pure3D package` before the model's `Selected material` messages. Try the compiled demo without a loose material folder. |
 | Glass and the opaque PBR path | Look through the Family Sedan windshield while walking around the car. The sky reflection moves with the camera. Check the shiny demo body and lens as separate materials. |
 | Linear HDR | Disable Lucas MSAA. Try both tone mappers. Test HDR and sky brightness with the stock world before stacking the screen-space passes. |
 | Bloom | Enable HDR and Bloom and test the demo with an emissive material. Tune `EmissiveStrength` to check the soft knee. Compare Streak Mix at 0%, 15%, and 100% to isolate the halo and horizontal streak. Pan past the chrome preview and watch narrow highlights as they move across the screen. |
@@ -74,10 +99,18 @@ Separating the GPU test from the full level load helped when tuning the effects.
 
 ## Where the rendering lives
 
-- `materials.cpp` and `hooks.S` identify Pure3D materials and track their lifetimes. The material load wrapper runs at the name assignment call and leaves the game's original continuation available to Lucas's Override Shader Parameters hack. The destroy hook drops stale shader pointers.
+- `materials.cpp` reads the `PBRD` chunk when the retail Pure3D loader
+  begins a top-level chunk. The stock loader skips that chunk afterward.
+  The packer puts a version, content ID, named texture bytes, and shader
+  settings in it. Keep the pack before the model's shader chunks. The
+  older hooks in `hooks.S` still match shader names and drop pointers when
+  the game destroys a shader.
 - `renderer.cpp` follows the Direct3D 9 factory import in Lucas's `Direct3D9.dll`, then wraps the D3D9 draw calls. This gives the material effects the game's bound textures, streams, lights, and transforms. Stock calls remain the fallback when a custom material's data or shader setup is unavailable. Keep device state restoration around partial failures, the glass second pass, and the depth-only scenery replay.
 - `effects.hlsl` handles vehicle glass, legacy paint, and the rigid PBR draw. Base color and emission decode from sRGB. Normal and ORM inputs stay linear. Keep the active stock albedo binding available so the original vehicle damage textures can swap in. The PBR directional and environment sliders apply to the PBR lighting terms. World exposure is taken later from the finished scene.
-- Interior materials use the rigid PBR draw for the façade. The pixel shader intersects the camera ray with a virtual room box in UV space, then projects from the room center into the mirror-ball map. The glass uses the exterior environment reflection. The demo plane lives in `PBRInterior.p3d` in the LMLM. Its two TGA maps are embedded in the native hack. To rebuild those three inputs, run `node tools/build-preview.cjs --interior <output-folder>`.
+- Interior materials draw the façade through PBR. The camera ray hits a
+  virtual room box, which gives the mirror-ball room map its parallax.
+  The demo loads `PBRInterior.p3d` after `PBRMaterials.p3d`, reusing the
+  chrome preview's environment for the window reflection.
 - `postfx.cpp` owns the FP16 world target and post-processing. The world-layer hook returns the original render target and depth surface before the GUI runs. The sky pass scales the early sky draw inside its viewport, before the level renders over it. Bloom thresholds source texels and rolls off bright outliers before reducing resolution, then builds its halo with a normalized two-pass convolution at each level. The horizontal streak uses a vertical convolution on the quarter-resolution highlights for a softer profile. The composite scatters a portion of the filtered highlights into these kernels, then applies vignette and HDR exposure before ACES or Neutral tone mapping.
 - `postfx.hlsl` and `ao.hlsli` share the final world depth where required. SSR and SSGI need four simultaneous render targets and readable INTZ depth. PBR writes octahedral view normals, roughness, depth, albedo, metallic, and the environment specular fallback. GTAO can run with INTZ alone and reconstructs its geometric normals from depth. Leave the sky and HUD out of the AO shading.
 - `dof.hlsli` packs the circle of confusion from the completed INTZ depth alongside the HDR color, then gathers 32 matched color and depth samples. Background mode bypasses sharp pixels and rejects them from nearby blur samples. DOF runs before bloom. `histogram.hlsli` samples the tone-mapped image, reduces per-row cumulative counts into a 128-entry curve, and blends that curve over time on the GPU before remapping display luminance. Both passes are skipped in the AO-only view.

@@ -44,4 +44,15 @@ local function rewrite(first, limit, depth)
 end
 
 local ok, result, stop = pcall(rewrite, 1, #car + 1, 0)
-if ok and stop == #car + 1 and changed == 1 then Output(result) end
+if not ok or stop ~= #car + 1 or changed ~= 1 then return end
+
+local materialPath = GetModPath() .. "/Resources/PBRSedanMaterials.p3d"
+local header = string.pack("<I4I4", 0xff443350, 12)
+if Exists(materialPath, true, false) then
+    local materials = ReadFile(materialPath)
+    if materials and #materials >= 12 and materials:sub(1, 8) == header and
+       string.unpack("<I4", materials, 9) == #materials then
+        result = header .. string.pack("<I4", #result + #materials - 12) .. materials:sub(13) .. result:sub(13)
+    end
+end
+Output(result)
