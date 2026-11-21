@@ -13,8 +13,9 @@ with Lucas Mod Launcher 1.27.1.
 
 Start Level 1 and look around the Simpsons house. There's a chrome ball,
 a cyan light beside a white panel, and a window you can walk past to see
-the room shift behind the glass. The demo carries its maps in Pure3D files.
-That's all you need to copy.
+the room shift behind the glass. The demo also gives the Nuclear Waste
+Truck new bodywork, wheels, and glass while keeping its original cabin
+material. Its maps are already in the demo's Pure3D files.
 
 Updating from an older build? Replace both packages if you use the demo.
 `VehicleShaders` was the car-only name. Lucas still uses it behind the

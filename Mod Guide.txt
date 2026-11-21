@@ -10,6 +10,7 @@ Want to see what it does? Put PBR Shader Demo.lmlm in Mods and enable it
 under General. Start Level 1 and look by the Simpsons house. The chrome
 ball shows the reflections, the cyan light shows the color bounce, and
 the framed window shows the fake room moving behind the glass.
+The demo also replaces the Nuclear Waste Truck with a remastered model.
 
 The demo maps come in the LMLM, inside Pure3D files. If you're upgrading,
 replace the hack and demo together. The old VehicleShaders folder is for

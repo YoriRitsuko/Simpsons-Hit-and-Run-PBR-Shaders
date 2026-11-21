@@ -60,6 +60,13 @@ demo settings. To change the interior fixture, generate it with
 `node tools/build-preview.cjs --interior <output-folder>`, update the
 preview room maps and model, then run `--pack-demo` again.
 
+To rebuild the Nuclear Waste Truck, extract `NuTruck_Remaster.zip` and run
+`node tools/build-nuctruck.cjs <extracted-folder> "package/PBR Shader Demo/Resources/NuTruckRemaster.p3d"`.
+The launcher combines this file with the retail `art/cars/nuctruck.p3d`
+when the truck loads. It swaps the three meshes and centers the rear axle
+in the new wheel arches. The barrels use the baked emissive map with the
+stock glow sprites detached. The cabin swatches and driving lights stay.
+
 The player package needs `Hacks/PBR Shaders.lmlh`, the optional
 `Mods/PBR Shader Demo.lmlm`, and the guide. The GUI and CLI packers are
 authoring tools in the source checkout. Keep `Release/`, launcher settings,
