@@ -48,6 +48,11 @@ $postProfiles = @{
     HorizonOcclusion = 'ps_3_0'
     FilterOcclusion = 'ps_3_0'
     SkyBrightness = 'ps_3_0'
+    DepthOfField = 'ps_3_0'
+    HistogramMeter = 'ps_3_0'
+    HistogramRows = 'ps_3_0'
+    HistogramCurve = 'ps_3_0'
+    ApplyHistogram = 'ps_3_0'
 }
 $release = Join-Path $PSScriptRoot 'Release'
 $out = Join-Path $release 'PBR Shaders.lmlh'

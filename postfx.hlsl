@@ -195,12 +195,16 @@ float3 NeutralToneMap(float3 color)
     return compressed * lerp(1.0, shifted / peak, saturation);
 }
 
+float3 EncodeSrgb(float3 color)
+{
+    return lerp(12.92 * color, 1.055 * pow(color, 1.0 / 2.4) - 0.055, step(0.0031308, color));
+}
+
 float4 NeutralComposite(float2 uv : TEXCOORD0) : COLOR0
 {
     if (occlusionMode.x > 1.5) return float4(AmbientVisibility(uv).xxx, 1);
     float3 color = saturate(NeutralToneMap(CompositeHdr(uv)));
-    float3 srgb = lerp(12.92 * color, 1.055 * pow(color, 1.0 / 2.4) - 0.055, step(0.0031308, color));
-    return float4(srgb, 1);
+    return float4(EncodeSrgb(color), 1);
 }
 
 float ViewZ(float depth)
@@ -496,3 +500,5 @@ float4 IndirectComposite(float2 uv : TEXCOORD0) : COLOR0
 }
 
 #include "ao.hlsli"
+#include "dof.hlsli"
+#include "histogram.hlsli"

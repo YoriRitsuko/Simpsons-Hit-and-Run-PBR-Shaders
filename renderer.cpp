@@ -275,8 +275,8 @@ constexpr unsigned PbrLightLimit = 8;
 
 struct PbrSettings {
     bool allSceneLights = false;
-    unsigned directPercent = 100;
-    unsigned environmentPercent = 50;
+    unsigned directPercent = 200;
+    unsigned environmentPercent = 70;
     PostSettings post;
 };
 
@@ -308,35 +308,41 @@ void ReadPbrSettings()
         memcpy(&value, setting + 0x188, sizeof(value));
         return value <= maximum ? value : fallback;
     };
-    pbrSettings.allSceneLights = read(L"DirectionalLights", 0, 1) == 1;
-    pbrSettings.directPercent = read(L"DirectLightPercent", 100, 800);
+    pbrSettings.allSceneLights = read(L"DirectionalLights", pbrSettings.allSceneLights, 1) == 1;
+    pbrSettings.directPercent = read(L"DirectLightPercent", pbrSettings.directPercent, 800);
     pbrSettings.environmentPercent = read(L"EnvironmentPercent", pbrSettings.environmentPercent, 800);
     const auto tick = [find](const wchar_t* name, bool fallback) {
         const auto* setting = find(L"VehicleShaders", name);
         return setting ? setting[0x188] != 0 : fallback;
     };
-    pbrSettings.post.linear = tick(L"LinearHDR", false);
-    pbrSettings.post.bloom = tick(L"HDRBloom", true);
-    pbrSettings.post.vignette = tick(L"HDRVignette", false);
-    pbrSettings.post.reflections = tick(L"OpaqueSSR", false);
-    pbrSettings.post.globalIllumination = tick(L"SSGI", false);
-    pbrSettings.post.staticIllumination = tick(L"SSGIStaticWorld", false);
-    pbrSettings.post.ambientOcclusion = tick(L"AmbientOcclusion", false);
-    pbrSettings.post.occlusionOnly = read(L"AOView", 0, 1) == 1;
-    pbrSettings.post.toneMapper = static_cast<ToneMapper>(read(L"ToneMapper", 0, 1));
-    pbrSettings.post.reflectionSteps = std::max(16u, read(L"SSRSteps", 64, 128));
-    pbrSettings.post.reflectionDistance = std::max(8u, read(L"SSRDistance", 64, 160));
-    pbrSettings.post.indirectRays = std::max(6u, read(L"SSGIRays", pbrSettings.post.indirectRays, 32));
-    pbrSettings.post.indirectDistance = std::max(1u, read(L"SSGIDistance", pbrSettings.post.indirectDistance, 12));
-    pbrSettings.post.indirectStrength = read(L"SSGIStrength", pbrSettings.post.indirectStrength, 200);
-    pbrSettings.post.aoQuality = read(L"AOQuality", pbrSettings.post.aoQuality, 2);
-    pbrSettings.post.aoRadius = std::max(25u, read(L"AORadius", pbrSettings.post.aoRadius, 250));
-    pbrSettings.post.aoStrength = read(L"AOStrength", pbrSettings.post.aoStrength, 200);
-    pbrSettings.post.exposure = std::max(25u, read(L"HDRExposure", pbrSettings.post.exposure, 400));
-    pbrSettings.post.skyBrightness = std::max(25u, read(L"SkyBrightness", pbrSettings.post.skyBrightness, 400));
-    pbrSettings.post.bloomStrength = read(L"HDRBloomStrength", pbrSettings.post.bloomStrength, 100);
-    pbrSettings.post.bloomStreakMix = read(L"HDRBloomStreakMix", pbrSettings.post.bloomStreakMix, 100);
-    pbrSettings.post.vignetteStrength = read(L"HDRVignetteStrength", pbrSettings.post.vignetteStrength, 100);
+    auto& post = pbrSettings.post;
+    post.linear = tick(L"LinearHDR", post.linear);
+    post.bloom = tick(L"HDRBloom", post.bloom);
+    post.vignette = tick(L"HDRVignette", post.vignette);
+    post.reflections = tick(L"OpaqueSSR", post.reflections);
+    post.globalIllumination = tick(L"SSGI", post.globalIllumination);
+    post.staticIllumination = tick(L"SSGIStaticWorld", post.staticIllumination);
+    post.ambientOcclusion = tick(L"AmbientOcclusion", post.ambientOcclusion);
+    post.depthOfField = tick(L"DepthOfField", post.depthOfField);
+    post.histogramEqualization = tick(L"HistogramEqualization", post.histogramEqualization);
+    post.occlusionOnly = read(L"AOView", post.occlusionOnly, 1) == 1;
+    post.toneMapper = static_cast<ToneMapper>(read(L"ToneMapper", static_cast<unsigned>(post.toneMapper), 1));
+    post.reflectionSteps = std::max(16u, read(L"SSRSteps", post.reflectionSteps, 128));
+    post.reflectionDistance = std::max(8u, read(L"SSRDistance", post.reflectionDistance, 160));
+    post.indirectRays = std::max(6u, read(L"SSGIRays", post.indirectRays, 32));
+    post.indirectDistance = std::max(1u, read(L"SSGIDistance", post.indirectDistance, 12));
+    post.indirectStrength = read(L"SSGIStrength", post.indirectStrength, 200);
+    post.aoQuality = read(L"AOQuality", post.aoQuality, 2);
+    post.aoRadius = std::max(25u, read(L"AORadius", post.aoRadius, 250));
+    post.aoStrength = read(L"AOStrength", post.aoStrength, 200);
+    post.exposure = std::max(25u, read(L"HDRExposure", post.exposure, 400));
+    post.skyBrightness = std::max(25u, read(L"SkyBrightness", post.skyBrightness, 400));
+    post.bloomStrength = read(L"HDRBloomStrength", post.bloomStrength, 100);
+    post.bloomStreakMix = read(L"HDRBloomStreakMix", post.bloomStreakMix, 100);
+    post.vignetteStrength = read(L"HDRVignetteStrength", post.vignetteStrength, 100);
+    post.focusDistance = std::max(1u, read(L"DOFFocusDistance", post.focusDistance, 100));
+    post.focusRadius = std::max(2u, read(L"DOFBlurRadius", post.focusRadius, 24));
+    post.histogramStrength = read(L"HistogramStrength", post.histogramStrength, 100);
 }
 
 struct PbrLights {
@@ -863,7 +869,7 @@ template<class Draw>
 HRESULT Render(IDirect3DDevice9* device, Draw draw)
 {
     const auto pass = [&](bool captureStatic = true) {
-        CaptureAmbientProjection(device);
+        CaptureWorldProjection(device);
         ReflectorCoverage coverage(device);
         const HRESULT result = draw();
         if (captureStatic && SUCCEEDED(result) && BeginStaticDepthDraw(device)) {

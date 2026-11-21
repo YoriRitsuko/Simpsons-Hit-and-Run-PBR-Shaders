@@ -17,6 +17,11 @@
 #include "HorizonOcclusion.inc"
 #include "FilterOcclusion.inc"
 #include "SkyBrightness.inc"
+#include "DepthOfField.inc"
+#include "HistogramMeter.inc"
+#include "HistogramRows.inc"
+#include "HistogramCurve.inc"
+#include "ApplyHistogram.inc"
 
 #include <algorithm>
 #include <array>
@@ -29,6 +34,9 @@ constexpr D3DFORMAT hdrFormat = D3DFMT_A16B16G16R16F;
 constexpr auto depthFormat = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
 constexpr unsigned lutSize = 64;
 constexpr unsigned bloomStreakLevel = 1; // Quarter resolution.
+constexpr UINT histogramWidth = 64;
+constexpr UINT histogramHeight = 36;
+constexpr UINT histogramBins = 128;
 PostSettings options;
 IDirect3DDevice9* sceneDevice = nullptr;
 unsigned staticDisplayDepth = 0;
@@ -67,6 +75,31 @@ struct BloomLevel {
     Target scratch;
 };
 
+struct Histogram {
+    Target meter;
+    Target rows;
+    Target curve;
+    Target scratch;
+    ComPtr<IDirect3DPixelShader9> meterShader;
+    ComPtr<IDirect3DPixelShader9> rowsShader;
+    ComPtr<IDirect3DPixelShader9> curveShader;
+    ComPtr<IDirect3DPixelShader9> applyShader;
+    DWORD updated = 0;
+
+    void Clear()
+    {
+        meter.Release();
+        rows.Release();
+        curve.Release();
+        scratch.Release();
+        meterShader.Reset();
+        rowsShader.Reset();
+        curveShader.Reset();
+        applyShader.Reset();
+        updated = 0;
+    }
+};
+
 struct Frame {
     IDirect3DDevice9* device = nullptr;
     UINT width = 0, height = 0;
@@ -84,6 +117,7 @@ struct Frame {
     ComPtr<IDirect3DPixelShader9> horizonOcclusion;
     ComPtr<IDirect3DPixelShader9> filterOcclusion;
     ComPtr<IDirect3DPixelShader9> skyBrightness;
+    ComPtr<IDirect3DPixelShader9> depthOfField;
     Target world;
     Target processed;
     Target irradiance;
@@ -93,6 +127,7 @@ struct Frame {
     Target occlusionScratch;
     std::array<BloomLevel, 4> bloom;
     Target bloomStreak;
+    Histogram histogram;
     std::array<Target, 3> material;
     ComPtr<IDirect3DTexture9> readableDepth;
     ComPtr<IDirect3DSurface9> depth;
@@ -109,12 +144,12 @@ struct Frame {
     bool active = false;
     bool depthBound = false;
     bool materialTargetsCleared = false;
-    bool aoProjectionKnown = false;
+    bool worldProjectionKnown = false;
     bool hasReceivers = false;
     bool hasStaticReceivers = false;
     bool staticShapeResolved = false;
     D3DMATRIX projection{};
-    D3DMATRIX aoProjection{};
+    D3DMATRIX worldProjection{};
 
     void ClearBloom()
     {
@@ -142,6 +177,7 @@ struct Frame {
         occlusion.Release();
         occlusionScratch.Release();
         ClearBloom();
+        histogram.Clear();
         for (auto& target : material) target.Release();
         depth.Reset();
         readableDepth.Reset();
@@ -157,9 +193,10 @@ struct Frame {
         horizonOcclusion.Reset();
         filterOcclusion.Reset();
         skyBrightness.Reset();
+        depthOfField.Reset();
         ready = reflectionReady = indirectReady = active = depthBound = hasReceivers = false;
         staticDepthReady = hasStaticReceivers = staticShapeResolved = false;
-        aoReady = aoProjectionKnown = materialTargetsCleared = false;
+        aoReady = worldProjectionKnown = materialTargetsCleared = false;
         device = nullptr;
     }
 } frame;
@@ -235,12 +272,17 @@ bool CreateReadableDepth(IDirect3DDevice9* device, UINT width, UINT height)
            SUCCEEDED(frame.readableDepth.Get()->GetSurfaceLevel(0, frame.depth.Put()));
 }
 
+bool EnsureProcessedTarget(IDirect3DDevice9* device)
+{
+    return frame.processed.surface.Get() || frame.processed.Create(device, frame.width, frame.height);
+}
+
 bool CreateScreenData(IDirect3DDevice9* device, UINT width, UINT height)
 {
     D3DCAPS9 caps{};
     if (FAILED(device->GetDeviceCaps(&caps)) || caps.NumSimultaneousRTs < 4 ||
         !(caps.PrimitiveMiscCaps & D3DPMISCCAPS_SEPARATEALPHABLEND) ||
-        !frame.processed.Create(device, width, height)) return false;
+        !EnsureProcessedTarget(device)) return false;
     for (auto& target : frame.material) {
         if (!target.Create(device, width, height)) return false;
     }
@@ -309,6 +351,21 @@ bool CreateBloom(IDirect3DDevice9* device, UINT width, UINT height)
     return true;
 }
 
+bool CreateHistogram(IDirect3DDevice9* device)
+{
+    auto& histogram = frame.histogram;
+    const auto shader = [device](const BYTE* code, ComPtr<IDirect3DPixelShader9>& result) {
+        return SUCCEEDED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(code), result.Put()));
+    };
+    return EnsureProcessedTarget(device) &&
+           histogram.meter.Create(device, histogramWidth, histogramHeight) &&
+           histogram.rows.Create(device, histogramBins, histogramHeight) &&
+           histogram.curve.Create(device, histogramBins, 1) &&
+           histogram.scratch.Create(device, histogramBins, 1) &&
+           shader(HistogramMeterCode, histogram.meterShader) && shader(HistogramRowsCode, histogram.rowsShader) &&
+           shader(HistogramCurveCode, histogram.curveShader) && shader(ApplyHistogramCode, histogram.applyShader);
+}
+
 bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
 {
     if (frame.device == device && frame.width == desc.Width && frame.height == desc.Height) return frame.ready;
@@ -338,7 +395,7 @@ bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
     const bool indirect = options.globalIllumination && options.indirectStrength != 0;
     const bool ao = options.ambientOcclusion && (options.aoStrength || options.occlusionOnly);
     const bool screen = options.reflections || indirect;
-    const bool depth = (screen || ao) && CreateReadableDepth(device, desc.Width, desc.Height);
+    const bool depth = (screen || ao || options.depthOfField) && CreateReadableDepth(device, desc.Width, desc.Height);
     frame.aoReady = ao && depth && CreateAmbientOcclusion(device, desc.Width, desc.Height);
     if (screen && depth && CreateScreenData(device, desc.Width, desc.Height)) {
         frame.reflectionReady = options.reflections &&
@@ -353,8 +410,17 @@ bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
     if (options.reflections && !frame.reflectionReady) ShaderLog("SSR depth or material targets are unavailable.");
     if (indirect && !frame.indirectReady) ShaderLog("SSGI depth or material targets are unavailable.");
     if (ao && !frame.aoReady) ShaderLog("Ambient occlusion depth or half-resolution targets are unavailable.");
+    if (options.depthOfField &&
+        (!depth || !EnsureProcessedTarget(device) ||
+         FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(DepthOfFieldCode),
+                                          frame.depthOfField.Put()))))
+        ShaderLog("Depth of field requires readable depth and an HDR scratch target.");
+    if (options.histogramEqualization && options.histogramStrength && !CreateHistogram(device)) {
+        frame.histogram.Clear();
+        ShaderLog("Histogram equalization targets are unavailable.");
+    }
     if (options.skyBrightness != 100 &&
-        ((!frame.processed.surface.Get() && !frame.processed.Create(device, desc.Width, desc.Height)) ||
+        (!EnsureProcessedTarget(device) ||
          FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(SkyBrightnessCode), frame.skyBrightness.Put()))))
         ShaderLog("Could not create the sky brightness pass.");
     ShaderLog("Created linear HDR world target. Tone mapper: ", aces ? "ACES 1.3" : "Khronos PBR Neutral");
@@ -380,7 +446,7 @@ void StartWorld()
     frame.staticShapeResolved = false;
     frame.staticDepthReady = false;
     frame.depthBound = false;
-    frame.aoProjectionKnown = false;
+    frame.worldProjectionKnown = false;
     frame.materialTargetsCleared = false;
     if (frame.reflectionReady || frame.indirectReady) {
         // Clear before binding the material targets to an opaque draw.
@@ -394,7 +460,7 @@ void StartWorld()
             frame.staticDepthReady = SUCCEEDED(device->Clear(0, nullptr, D3DCLEAR_ZBUFFER, 0, 1, 0));
         frame.materialTargetsCleared = cleared;
     }
-    if (frame.materialTargetsCleared || frame.aoReady)
+    if (frame.materialTargetsCleared || frame.aoReady || frame.depthOfField.Get())
         frame.depthBound = SUCCEEDED(device->SetDepthStencilSurface(frame.depth.Get()));
     if (!frame.depthBound) device->SetDepthStencilSurface(frame.backDepth.Get());
     if (FAILED(device->SetRenderTarget(0, frame.world.surface.Get()))) {
@@ -510,9 +576,10 @@ bool InstallSkyBrightnessHook()
     return true;
 }
 
-bool DrawBloomPass(IDirect3DDevice9* device, IDirect3DPixelShader9* shader, const Target& source,
-                   const Target& target, const std::array<float, 4>& parameters, DWORD filter = D3DTEXF_LINEAR)
+bool DrawPostPass(IDirect3DDevice9* device, IDirect3DPixelShader9* shader, const Target& source,
+                  const Target& target, const std::array<float, 4>& parameters, DWORD filter = D3DTEXF_LINEAR)
 {
+    device->SetTexture(0, nullptr);
     if (FAILED(device->SetRenderTarget(0, target.surface.Get())) ||
         FAILED(device->SetPixelShaderConstantF(0, parameters.data(), 1))) return false;
     Sample(device, 0, source.texture.Get(), filter);
@@ -535,29 +602,28 @@ std::array<float, 4> BloomReduction(const Target& source, const Target& target)
 BloomOutput RenderBloom(IDirect3DDevice9* device)
 {
     const auto& first = frame.bloom.front().image;
-    if (!DrawBloomPass(device, frame.bloomPrefilter.Get(), frame.world, first,
-                       BloomReduction(frame.world, first), D3DTEXF_POINT)) return {};
+    if (!DrawPostPass(device, frame.bloomPrefilter.Get(), frame.world, first,
+                      BloomReduction(frame.world, first), D3DTEXF_POINT)) return {};
 
     for (unsigned i = 1; i < frame.bloom.size(); ++i) {
         const auto& source = frame.bloom[i - 1].image;
         const auto& target = frame.bloom[i].image;
-        if (!DrawBloomPass(device, frame.bloomDownsample.Get(), source, target,
-                           BloomReduction(source, target))) return {};
+        if (!DrawPostPass(device, frame.bloomDownsample.Get(), source, target, BloomReduction(source, target))) return {};
     }
 
     // Give the streak a soft vertical profile so it slides between rows as
     // a highlight moves. Reuse the quarter-resolution halo's scratch target.
     const auto& streakLevel = frame.bloom[bloomStreakLevel];
     const bool streak = frame.bloomStreakShader.Get() &&
-        DrawBloomPass(device, frame.bloomConvolution.Get(), streakLevel.image, streakLevel.scratch,
-                      {0.0f, 1.0f / streakLevel.image.height}) &&
-        DrawBloomPass(device, frame.bloomStreakShader.Get(), streakLevel.scratch, frame.bloomStreak,
-                      {1.0f / streakLevel.image.width});
+        DrawPostPass(device, frame.bloomConvolution.Get(), streakLevel.image, streakLevel.scratch,
+                     {0.0f, 1.0f / streakLevel.image.height}) &&
+        DrawPostPass(device, frame.bloomStreakShader.Get(), streakLevel.scratch, frame.bloomStreak,
+                     {1.0f / streakLevel.image.width});
     for (const auto& level : frame.bloom) {
-        if (!DrawBloomPass(device, frame.bloomConvolution.Get(), level.image, level.scratch,
-                           {1.0f / level.image.width, 0.0f}) ||
-            !DrawBloomPass(device, frame.bloomConvolution.Get(), level.scratch, level.image,
-                           {0.0f, 1.0f / level.image.height})) return {};
+        if (!DrawPostPass(device, frame.bloomConvolution.Get(), level.image, level.scratch,
+                          {1.0f / level.image.width, 0.0f}) ||
+            !DrawPostPass(device, frame.bloomConvolution.Get(), level.scratch, level.image,
+                          {0.0f, 1.0f / level.image.height})) return {};
     }
     static bool logged = false;
     if (!logged) {
@@ -675,7 +741,7 @@ void ResolveIndirectLighting(IDirect3DDevice9* device)
 
 bool RenderAmbientOcclusion(IDirect3DDevice9* device)
 {
-    if (!frame.depthBound || !frame.aoProjectionKnown) return false;
+    if (!frame.aoReady || !frame.depthBound || !frame.worldProjectionKnown) return false;
     const auto width = frame.occlusion.width;
     const auto height = frame.occlusion.height;
     constexpr float slices[] = {2.0f, 4.0f, 6.0f};
@@ -683,7 +749,7 @@ bool RenderAmbientOcclusion(IDirect3DDevice9* device)
     const float controls[] = {0.012f * options.aoRadius, 0.007f * options.aoStrength,
                               slices[options.aoQuality], steps[options.aoQuality]};
     const float grid[] = {1.0f / width, 1.0f / height, 1.0f / frame.width, 1.0f / frame.height};
-    device->SetPixelShaderConstantF(1, &frame.aoProjection.m[0][0], 4);
+    device->SetPixelShaderConstantF(1, &frame.worldProjection.m[0][0], 4);
     device->SetPixelShaderConstantF(6, controls, 1);
     device->SetPixelShaderConstantF(7, grid, 1);
     Sample(device, 9, frame.readableDepth.Get(), D3DTEXF_POINT);
@@ -713,6 +779,94 @@ bool RenderAmbientOcclusion(IDirect3DDevice9* device)
     return true;
 }
 
+void RenderDepthOfField(IDirect3DDevice9* device)
+{
+    if (!frame.depthOfField.Get() || !frame.depthBound || !frame.worldProjectionKnown) return;
+    if (FAILED(device->SetPixelShaderConstantF(1, &frame.worldProjection.m[0][0], 4))) return;
+    const float blur = options.focusRadius * (float(frame.height) / 1080.0f);
+    const std::array<float, 4> parameters = {float(options.focusDistance), 0,
+                                             blur / frame.width, blur / frame.height};
+    Sample(device, 1, frame.readableDepth.Get(), D3DTEXF_POINT);
+    const bool drawn = DrawPostPass(device, frame.depthOfField.Get(), frame.world, frame.processed, parameters);
+    device->SetTexture(1, nullptr);
+    if (drawn) {
+        frame.world.Swap(frame.processed);
+        static bool logged = false;
+        if (!logged) { ShaderLog("Rendered depth of field from the world depth."); logged = true; }
+    }
+}
+
+bool CompositeWorld(IDirect3DDevice9* device, IDirect3DSurface9* target, BloomOutput bloom, bool ao)
+{
+    device->SetTexture(0, nullptr);
+    if (FAILED(device->SetRenderTarget(0, target))) return false;
+    const float parameters[4] = {bloom.halo ? options.bloomStrength * 0.01f : 0.0f,
+                                 bloom.streak ? options.bloomStreakMix * 0.01f : 0.0f, 0,
+                                 options.exposure * 0.01f};
+    const float ambientMode[4] = {ao ? (options.occlusionOnly ? 2.0f : 1.0f) : 0.0f, 0, 0, 0};
+    const float diagonal = std::hypot(float(frame.width), float(frame.height));
+    const float vignette[4] = {frame.width / diagonal, frame.height / diagonal,
+                               options.vignette ? options.vignetteStrength * 0.01f : 0.0f, 0};
+    device->SetPixelShaderConstantF(0, parameters, 1);
+    device->SetPixelShaderConstantF(8, ambientMode, 1);
+    device->SetPixelShaderConstantF(10, vignette, 1);
+    Sample(device, 0, frame.world.texture.Get(), D3DTEXF_POINT);
+    if (ao) Sample(device, 8, frame.occlusion.texture.Get(), D3DTEXF_POINT);
+    if (bloom.halo) {
+        for (unsigned i = 0; i < frame.bloom.size(); ++i)
+            Sample(device, i + 1, frame.bloom[i].image.texture.Get(), D3DTEXF_LINEAR);
+    }
+    if (bloom.streak) Sample(device, 10, frame.bloomStreak.texture.Get(), D3DTEXF_LINEAR);
+    if (frame.lut.Get()) Sample(device, 5, frame.lut.Get(), D3DTEXF_LINEAR);
+    const bool drawn = FullScreen(device, frame.composite.Get(), frame.width, frame.height);
+    static bool logged = false;
+    if (drawn && !logged) {
+        ShaderLog("Composited HDR before the GUI using ",
+                  options.toneMapper == ToneMapper::Aces13 ? "ACES 1.3." : "Khronos PBR Neutral.");
+        const auto exposure = std::to_string(options.exposure) + "%.";
+        ShaderLog("Applied HDR exposure: ", exposure.c_str());
+        if (vignette[2] > 0) {
+            const auto strength = std::to_string(options.vignetteStrength) + "%.";
+            ShaderLog("Applied vignette strength: ", strength.c_str());
+        }
+        logged = true;
+    }
+    return drawn;
+}
+
+bool PresentEqualized(IDirect3DDevice9* device)
+{
+    auto& histogram = frame.histogram;
+    const DWORD now = GetTickCount();
+    const DWORD elapsed = now - histogram.updated;
+    // Snap after a device reset or a long gap in gameplay.
+    const bool fresh = histogram.updated == 0 || elapsed >= 750;
+    const float blend = fresh ? 1.0f : 1.0f - std::exp(-float(elapsed) / 300.0f);
+    if (!DrawPostPass(device, histogram.meterShader.Get(), frame.processed, histogram.meter,
+                      {histogramBins, 1.0f / histogramBins}, D3DTEXF_POINT) ||
+        !DrawPostPass(device, histogram.rowsShader.Get(), histogram.meter, histogram.rows,
+                      {histogramWidth, 1.0f / histogramWidth, histogramBins, 1.0f / histogramBins},
+                      D3DTEXF_POINT)) return false;
+
+    Sample(device, 1, histogram.curve.texture.Get(), D3DTEXF_POINT);
+    const bool mapped = DrawPostPass(device, histogram.curveShader.Get(), histogram.rows, histogram.scratch,
+                                     {histogramHeight, 1.0f / histogramHeight, 1.0f / histogramBins, blend},
+                                     D3DTEXF_POINT);
+    device->SetTexture(1, nullptr);
+    if (!mapped || FAILED(device->SetRenderTarget(0, frame.backBuffer.Get()))) return false;
+    histogram.curve.Swap(histogram.scratch);
+    histogram.updated = now;
+
+    const float parameters[4] = {0.01f * options.histogramStrength, 0.5f / histogramBins, 0, 0};
+    device->SetPixelShaderConstantF(0, parameters, 1);
+    Sample(device, 0, frame.processed.texture.Get(), D3DTEXF_POINT);
+    Sample(device, 1, histogram.curve.texture.Get(), D3DTEXF_LINEAR);
+    const bool drawn = FullScreen(device, histogram.applyShader.Get(), frame.width, frame.height);
+    static bool logged = false;
+    if (drawn && !logged) { ShaderLog("Applied cumulative luminance histogram equalization."); logged = true; }
+    return drawn;
+}
+
 void FinishWorld()
 {
     if (!frame.active) return;
@@ -734,42 +888,16 @@ void FinishWorld()
         if (irradiance) ResolveIndirectLighting(device);
     }
     const bool ao = captured && RenderAmbientOcclusion(device);
-    const auto bloom = captured && frame.bloomReady && !(ao && options.occlusionOnly)
-        ? RenderBloom(device) : BloomOutput{};
-    device->SetRenderTarget(0, frame.backBuffer.Get());
     if (captured) {
-        const float parameters[4] = {bloom.halo ? options.bloomStrength * 0.01f : 0.0f,
-                                     bloom.streak ? options.bloomStreakMix * 0.01f : 0.0f, 0,
-                                     options.exposure * 0.01f};
-        device->SetPixelShaderConstantF(0, parameters, 1);
-        const float ambientMode[4] = {ao ? (options.occlusionOnly ? 2.0f : 1.0f) : 0.0f, 0, 0, 0};
-        device->SetPixelShaderConstantF(8, ambientMode, 1);
-        const float diagonal = std::hypot(float(frame.width), float(frame.height));
-        const float vignette[4] = {frame.width / diagonal, frame.height / diagonal,
-                                   options.vignette ? options.vignetteStrength * 0.01f : 0.0f, 0};
-        device->SetPixelShaderConstantF(10, vignette, 1);
-        Sample(device, 0, frame.world.texture.Get(), D3DTEXF_POINT);
-        if (ao) Sample(device, 8, frame.occlusion.texture.Get(), D3DTEXF_POINT);
-        if (bloom.halo) {
-            for (unsigned i = 0; i < frame.bloom.size(); ++i)
-                Sample(device, i + 1, frame.bloom[i].image.texture.Get(), D3DTEXF_LINEAR);
-        }
-        if (bloom.streak) Sample(device, 10, frame.bloomStreak.texture.Get(), D3DTEXF_LINEAR);
-        if (frame.lut.Get()) Sample(device, 5, frame.lut.Get(), D3DTEXF_LINEAR);
-        const bool drawn = FullScreen(device, frame.composite.Get(), frame.width, frame.height);
-        static bool logged = false;
-        if (drawn && !logged) {
-            ShaderLog("Composited HDR before the GUI using ",
-                      options.toneMapper == ToneMapper::Aces13 ? "ACES 1.3." : "Khronos PBR Neutral.");
-            const auto exposure = std::to_string(options.exposure) + "%.";
-            ShaderLog("Applied HDR exposure: ", exposure.c_str());
-            if (vignette[2] > 0) {
-                const auto strength = std::to_string(options.vignetteStrength) + "%.";
-                ShaderLog("Applied vignette strength: ", strength.c_str());
-            }
-            logged = true;
-        }
+        const bool diagnostic = ao && options.occlusionOnly;
+        if (!diagnostic) RenderDepthOfField(device);
+        const auto bloom = frame.bloomReady && !diagnostic ? RenderBloom(device) : BloomOutput{};
+        const bool equalized = !diagnostic && frame.histogram.applyShader.Get() &&
+            CompositeWorld(device, frame.processed.surface.Get(), bloom, ao) && PresentEqualized(device);
+        if (!equalized) CompositeWorld(device, frame.backBuffer.Get(), bloom, ao);
         saved.Get()->Apply();
+    } else {
+        device->SetRenderTarget(0, frame.backBuffer.Get());
     }
     device->SetDepthStencilSurface(frame.backDepth.Get());
     device->SetViewport(&viewport);
@@ -789,8 +917,8 @@ void __fastcall RunWorldLayer(void* layer, void*)
 
 void InstallPostEffects(const PostSettings& settings)
 {
-    if (!settings.linear) return;
     options = settings;
+    if (!options.linear) return;
     // WorldRenderLayer::Render runs inside the gameplay frame. The GUI has
     // a separate layer and gets the original backbuffer after this returns.
     auto** render = reinterpret_cast<void**>(0x60be44);
@@ -846,14 +974,15 @@ bool TracksWorldCoverage(IDirect3DDevice9* device)
     return LinearWorld(device) && frame.depthBound;
 }
 
-void CaptureAmbientProjection(IDirect3DDevice9* device)
+void CaptureWorldProjection(IDirect3DDevice9* device)
 {
-    if (!frame.aoReady || frame.aoProjectionKnown || !TracksWorldCoverage(device)) return;
+    if ((!frame.aoReady && !frame.depthOfField.Get()) || frame.worldProjectionKnown || !TracksWorldCoverage(device))
+        return;
     DWORD depth, writeDepth;
     if (SUCCEEDED(device->GetRenderState(D3DRS_ZENABLE, &depth)) && depth == D3DZB_TRUE &&
         SUCCEEDED(device->GetRenderState(D3DRS_ZWRITEENABLE, &writeDepth)) && writeDepth &&
-        SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &frame.aoProjection)) && std::abs(frame.aoProjection._34) > 0.5f)
-        frame.aoProjectionKnown = true;
+        SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &frame.worldProjection)) && std::abs(frame.worldProjection._34) > 0.5f)
+        frame.worldProjectionKnown = true;
 }
 
 bool BindScreenMaterialOutputs(IDirect3DDevice9* device, const D3DMATRIX& projection)
