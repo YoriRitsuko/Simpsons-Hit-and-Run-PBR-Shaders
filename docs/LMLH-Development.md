@@ -1,0 +1,80 @@
+# Working on the launcher hack
+
+PBR Shaders 3.6 was built on Windows with LLVM-MinGW 20260324 (x86 target) and `fxc.exe` from Windows SDK 10.0.26100.0. The test setup uses Lucas Mod Launcher **1.27.1** and an English retail PC copy of the game. Use a separate game and launcher directory for testing. Copy the complete launcher distribution, including the shipped framework files under `Mods`, to avoid missing-framework dialogs during command-line builds. The game executable's SHA-256 in that setup is:
+
+```text
+2928118887B910AE03CE714E287D9BC67FB95F29E1B4F1271B8AF389990C0795
+```
+
+The native hook addresses refer to that retail executable. The older Visual Studio source tree and map files help identify functions by name and behavior. Confirm addresses and expected bytes against retail before using them. `llvm-objdump -d` with `--start-address` and `--stop-address` is enough to check the small regions around most of the hooks.
+
+## What Lucas loads
+
+| File | Format and destination |
+| --- | --- |
+| `PBR Shaders.lmlh` | A 32-bit Windows DLL with launcher metadata in the `META.INI` resource. Put it in `Hacks` beside Lucas. |
+| `PBR Shader Demo.lmlm` | A compiled launcher mod. Put it in `Mods` and enable it in **General**. The folder under `package` is its editable source. |
+| `VehicleShaders/` | Loose textures and the optional `VehicleShaders.ini` beside `Simpsons.exe`. The native loader reads these directly. |
+
+`HackMeta.ini` is the hack's metadata source. `hack.rc` embeds it, the license, and the ACES LUT. The launcher calls the exported `HackEntryPoint` at install-hacks event `1`. The x86 build has to export the name `HackEntryPoint`, which you can check with `llvm-objdump -p`.
+
+`InternalName=VehicleShaders` is the stable name for dependencies and saved settings. `Mod=1` and `Setting=1` put the hack on the **Settings** tab. `RequiredHack=Direct3D9` loads Lucas's D3D9 support. The demo uses `General=1` and requires both `VehicleShaders` and `CustomFiles`. It supplies the `VEHICLE_SHADERS_DEMO` command-line switch so the hack can load its demo materials on demand.
+
+`Title` is the display name. `Name` in each `[Setting]` section is the saved key. When adding a control, update the metadata and its native reader together. The native settings lookup in `ReadPbrSettings` is specific to the tested `Hacks.dll`. The code checks the PE timestamp and image size, checks the address behind export ordinal `2560`, and reads tickboxes, integer values, and multiple-choice indices at offset `0x188`. It falls back to the C++ defaults if those checks fail. When porting to a new launcher, verify that lookup and its value layout before trusting the UI state. [Launcher mod settings reference](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Mods/ConfiguringMods)
+
+## Build and package
+
+1. From the Git checkout, run `./build.ps1` with `i686-w64-mingw32-clang++.exe` on `PATH`, or pass `-Compiler` with its full path. The script looks for x86 `windres` beside the compiler and 64-bit `fxc.exe` in the Windows SDK. Override either path with `-ResourceCompiler` or `-ShaderCompiler` if needed.
+2. `fxc` compiles the Shader Model 3 shaders into temporary headers. The compiler links those headers with the native code and `hack.rc` into `Release/PBR Shaders.lmlh`. Add new shader entry points to the profile list in `build.ps1`. The ACES LUT is already in `resources`, so a normal build needs no LUT baker or demo input archives.
+3. Copy the built hack to the test launcher's `Hacks` folder. Copy `package/PBR Shader Demo` as a folder under its `Mods` folder. Reload and right-click **PBR Shader Demo → Compile**, or run the command below. The output goes into the directory passed to `-outputpath`. [Launcher command line](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/CommandLineArguments#mod-compilation)
+
+```powershell
+$launcher = 'C:\SHAR-Test\LucasModLauncher\Lucas Simpsons Hit & Run Mod Launcher.exe'
+$output = Join-Path (Get-Location) 'Release'
+Start-Process -FilePath $launcher -WorkingDirectory (Split-Path $launcher) -Wait `
+    -ArgumentList ('-appid PBRShadersDev -compile "PBR Shader Demo" -outputpath "{0}"' -f $output)
+```
+
+The demo uses Custom Files path handlers to append the original preview mesh to `art/l1z1.p3d` and add a reflection parameter to the stock Family Sedan windshield. The Lua reads those assets from the player's installation. Use the stock Level 1 zone and sedan to test those handlers. `Debug Custom Files Output` can help inspect their in-memory output. [Path handlers](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Hacks/CustomFiles/PathHandlerScripts) · [Debug Custom Files Output](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/Hacks/DebugCustomFilesOutput)
+
+The generated `PBRPreview.p3d` is checked in so the demo can be compiled from the checkout. The built demo needs its texture folder from the release bundle. To regenerate the mesh and textures together, use `tools/build-preview.cjs` with the original `MaterialPreviewMesh.zip` and `MaterialPreviewMeshShiny_Textures.zip` authoring inputs as described in the README. Keep the preview mesh and textures from the same generation.
+
+The distribution ZIP contains the hack at `Hacks/PBR Shaders.lmlh`, the optional demo at `Mods/PBR Shader Demo.lmlm`, the demo texture folder, the example INI, and the guides. The source ZIP contains the tracked repository files. Keep `Release/`, local launcher settings, and retail game files outside the Git history. Git pins source text to LF because `windres` embeds the metadata and license bytes verbatim.
+
+To check a release, extract both ZIPs, verify the bundled DLL and demo hashes against the tested copies, then rebuild the LMLH from the extracted source on the same toolchain. When comparing rebuilt PE files, the four-byte COFF timestamp is at `e_lfanew + 8`, where `e_lfanew` is the little-endian value at file offset `0x3c`. Normalize just those four bytes for a rebuild comparison.
+
+## Playtest and debug
+
+Choose the stock game executable in the test launcher. Enable **No Introduction Movies** to skip movie playback. The launcher log or game command line should show `SKIPMOVIE`. Level loads can still take a while. Use one isolated launcher profile and one game process so each test has a clear configuration and log.
+
+```powershell
+$env:SHAR_SHADER_LOG = Join-Path $env:TEMP 'pbr-shaders-playtest.log'
+Start-Process -FilePath $launcher -WorkingDirectory (Split-Path $launcher) `
+    -ArgumentList '-appid PBRShadersDev -launch -ignoreenabledmods -enabledmod "PBR Shaders" -enabledmod "PBR Shader Demo" -enabledmod NoIntroductionMovies'
+```
+
+`-enabledmod` takes the name of the file or folder in the launcher, without the extension. `RequiredHack` and the settings section use the internal name. The log path must be absolute and writable. `SHAR_SHADER_LOG` is inherited from the launching shell, and the log appends across runs. Use a fresh filename when comparing configurations. [Launcher command line](https://docs.donutteam.com/docs/LucasSimpsonsHitAndRunModLauncher/CommandLineArguments#enabled-mods--hacks)
+
+| Check | What to look for |
+| --- | --- |
+| Hack missing from the launcher | Use the launcher's `Hacks` location, check the embedded metadata, reload the list, and look under **Settings**. The compiled demo is under **General**. |
+| Material setup | Look for `Installed retail Pure3D material hooks`, `Connected to the launcher's Direct3D 9 factory`, and `Selected material`. Check whether the log reports an incompatible vertex stream or a failed texture upload. |
+| Glass and the opaque PBR path | Look through the Family Sedan windshield while walking around the car. The sky reflection moves with the camera. Check the shiny demo body and lens as separate materials. |
+| Linear HDR | Disable Lucas MSAA. Try both tone mappers. Test HDR and sky brightness with the stock world before stacking the screen-space passes. |
+| Bloom | Enable HDR and Bloom and test the demo with an emissive material. Tune `EmissiveStrength` on a single material to check the threshold and falloff. |
+| SSR | Enable HDR and SSR. Check the shiny sample with nearby characters in view. It traces from the final world depth. Test roughness and partial coverage near glass. |
+| SSGI | Enable SSGI with Bloom off. Look for blue bounce on the white receiver near the cyan emitter. Toggle **SSGI on Opaque Level Scenery** to compare the stock receiver scope. |
+| GTAO | Use **AO View → Occlusion Only** to inspect contact shading and halos. Switch to **Game** to check the composite with scene color. |
+
+Separating the GPU test from the full level load helped when tuning the effects. A D3D9 test can use a tiny synthetic depth/color scene and run the exact `fxc` shader entry points into render targets for readback. Useful cases include a stock wall lighting a stock floor, an occluder in front of the receiver, a flat plane next to an AO corner, and a known color patch through the real ACES LUT. Use Level 1 afterward to verify hooks, game render state, sky, and HUD.
+
+## Where the rendering lives
+
+- `materials.cpp` and `hooks.S` identify Pure3D materials and track their lifetimes. The material load wrapper runs at the name assignment call and leaves the game's original continuation available to Lucas's Override Shader Parameters hack. The destroy hook drops stale shader pointers.
+- `renderer.cpp` follows the Direct3D 9 factory import in Lucas's `Direct3D9.dll`, then wraps the D3D9 draw calls. This gives the material effects the game's bound textures, streams, lights, and transforms. Stock calls remain the fallback when a custom material's data or shader setup is unavailable. Keep device state restoration around partial failures, the glass second pass, and the depth-only scenery replay.
+- `effects.hlsl` handles vehicle glass, legacy paint, and the rigid PBR draw. Base color and emission decode from sRGB. Normal and ORM inputs stay linear. Keep the active stock albedo binding available so the original vehicle damage textures can swap in. The PBR directional and environment sliders apply to the PBR lighting terms. World exposure is taken later from the finished scene.
+- `postfx.cpp` owns the FP16 world target and post-processing. The world-layer hook returns the original render target and depth surface before the GUI runs. The sky pass scales the early sky draw inside its viewport, before the level renders over it. Bloom extracts from unexposed scene-linear color. HDR exposure is applied in the final ACES or Neutral composite.
+- `postfx.hlsl` and `ao.hlsli` share the final world depth where required. SSR and SSGI need four simultaneous render targets and readable INTZ depth. PBR writes octahedral view normals, roughness, depth, albedo, metallic, and the environment specular fallback. GTAO can run with INTZ alone and reconstructs its geometric normals from depth. Leave the sky and HUD out of the AO shading.
+- Run the screen-space passes after the full world draw. Resolving at the world-translucency boundary missed characters and some vehicles. Trace SSGI from the original HDR scene before SSR and bloom. Its optional scenery pass marks actual static draws with a depth replay and tests them against final world depth before reconstruction.
+
+Useful reference projects for the basic native hack layout are [WadSupport](https://github.com/EnAppelsin/WadSupport) and [FPCamInCar](https://github.com/Krolik9933/FPCamInCar). For the AO integration, see [Practical Realtime Strategies for Accurate Indirect Occlusion](https://research.activision.com/publications/archives/practical-real-time-strategies-for-accurate-indirect-occlusion).

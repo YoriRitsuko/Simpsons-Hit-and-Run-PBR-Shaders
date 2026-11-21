@@ -1,0 +1,251 @@
+PBR SHADERS
+Native material effects for The Simpsons: Hit & Run on Windows
+
+For a first custom car or prop, start with docs/Materials.md. It walks
+through one painted panel, texture packing, glass, and a glowing lamp.
+The launcher build and playtest notes are in docs/LMLH-Development.md.
+
+INSTALL
+
+1. Use the English retail PC executable with Lucas Mod Launcher 1.27.1.
+2. Put PBR Shaders.lmlh in the launcher's Hacks folder. Reload the mod
+   list and tick PBR Shaders in Settings. Lucas enables Direct3D 9
+   as a dependency.
+3. The Family Sedan windshield has reflections by default. To configure
+   your own materials, copy the example VehicleShaders folder beside
+   Simpsons.exe and edit VehicleShaders.ini before launching the game.
+
+If you used the earlier Vehicle Shaders preview, move that preview's proxy
+out of the game and launcher folders before using the LMLH.
+
+LEVEL 1 DEMO
+
+Copy PBR Shader Demo.lmlm into the launcher's Mods folder. Put the
+package's VehicleShaders texture folder beside Simpsons.exe. Enable
+PBR Shader Demo on the General page and start Level 1.
+
+The shiny sample sits by the Simpsons house. Its housing and lens are
+separate materials and use the supplied HDR mirror-ball environment.
+The Family Sedan's painted panels use the current game texture as base
+color, the mesh normals and a roughness of 0.24 with metallic set to zero.
+Damage can still swap the game texture. The demo gives the windshield
+the level's stock EnvMap.bmp through its REFL parameter.
+
+The matte white panel beside the sample picks up light from the cyan
+emitter. For a clear comparison, turn on Linear HDR and Screen-Space
+Global Illumination (SSGI), turn off Bloom, and launch Level 1. To change
+the cyan emission, set EmissiveStrength under [PBRBounceEmitter_m] in
+VehicleShaders.ini. The demo uses 4 by default.
+
+TRANSPARENT SPHEREMAP REFLECTIONS
+
+Pure3D materials with PddiShaderName set to spheremap and HasTranslucency
+enabled receive a reflection pass automatically when the game draws them
+with alpha blending. In the Pure3D editor, keep the material's usual
+transparency and set a reflection map using the REFL texture parameter.
+The hack uses the drawing material's spheremap when the renderer binds it
+on stage 1. The fallback is a built-in sky with clouds and a skyline.
+The sky is aligned to the world so it moves across the glass as you walk
+around the car.
+
+To add reflections to an existing alpha-blended simple material, use its
+exact Shader chunk Name as an INI section. Set Mode=Glass and optionally
+set SphereMap to a texture filename. The supplied Windsheild_m section
+uses the spelling found in the Family Sedan model.
+
+When the game binds a spheremap, the base glass draw uses the glass
+texture's alpha. The reflection blends over it with more weight at
+glancing angles, capped to retain transmission. Alpha-tested materials
+use an additive pass that keeps the original cutouts. The reflection
+pass leaves depth and destination alpha alone. Reflection strength
+ranges from 0 to 2. Zero skips the reflection pass. The default is 0.55.
+
+PBR MATERIALS
+
+Choose Mode=PBR in a VehicleShaders.ini section named after the Pure3D
+material. The mesh needs positions, normals and UV0. Use the simple PDDI
+shader and mark blended geometry as translucent in Pure3D so it draws
+after the opaque parts. Skinning stays on the game's original shader.
+
+  BaseColor    sRGB RGB and optional linear alpha, uncompressed TGA.
+               When omitted, the shader uses the game's base texture.
+  ORM          Linear R = ambient occlusion, G = roughness, B = metallic.
+               Leave alpha unused. Without a map, AO is one and the
+               Roughness and Metallic settings supply the other values.
+  NormalMap    Linear tangent-space RGB, uncompressed TGA. Optional.
+  EmissiveMap  sRGB RGB emission, uncompressed TGA. Optional. Use
+               EmissiveStrength to scale it.
+  Environment  Prefiltered, square RGBA16F DDS mirror-ball map. The
+               supplied Node converter builds it from a Radiance HDR.
+
+AlphaMode=Opaque ignores base alpha. Mask uses AlphaCutoff, which defaults
+to 0.5. Blend uses base alpha and disables depth writes. Opacity scales
+coverage in Blend and Mask. Exposure adjusts the PBR draw before it is
+written back to the game's standard color buffer.
+
+EmissiveStrength multiplies the linear RGB sampled from EmissiveMap.
+The range is 0 to 16. The default is 1, and 0 turns off emission for that
+material. To adjust the shiny demo's glow without replacing its baked maps,
+add EmissiveStrength under [PBRPreviewBody_m] in VehicleShaders.ini.
+The shiny lens has a black emission map. The same setting under
+[PBRPreviewGlass_m] scales any emission painted into the lens map.
+
+In the launcher's Settings tab, right-click PBR Shaders and open
+Mod Settings. Directional Lights defaults to Strongest light, which uses
+the active directional light with the brightest diffuse colour. Ties use
+the first light in draw order. All scene lights adds the same GGX response
+for every active directional light. A view with no directional light uses
+a fallback key fixed in world space.
+
+PBR Direct Light Strength (%) scales direct lighting. Environment Strength (%)
+scales the diffuse environment light and roughness-filtered reflections.
+Direct light defaults to 100% and environment defaults to 50%. Set a
+strength to 0% to turn off that contribution. Changes take effect the
+next time the game starts.
+
+The per-material DirectLightStrength and EnvironmentStrength INI values
+multiply the launcher strengths. They both default to 1.0. The Family
+Sedan glass and legacy paint modes have their own Reflection INI setting.
+
+Diffuse environment light uses the roughest mip as an approximation.
+The preview texture set had no AO map, so the packer uses white in ORM red.
+Emission contributes to the material color.
+
+LINEAR HDR, BLOOM, SSR AND SSGI
+
+Check Linear HDR in the hack's Mod Settings and restart the game. The
+Tone Mapper menu offers ACES 1.3 (default) and Khronos PBR Neutral.
+Bloom, Opaque Screen-Space Reflections and Screen-Space Global
+Illumination (SSGI) each have a checkbox in the same group. Bloom starts
+enabled for HDR. SSR and SSGI start disabled. The HDR path needs the
+Lucas anti-aliasing option turned off. The classic path is used when
+the backbuffer is multisampled or an HDR target cannot be created.
+
+The gameplay world renders into FP16 scene color. Stock color textures,
+material and fog colors use linear color during the world draw. Legacy
+vertex tint and lighting factors follow the original material conventions.
+The selected tone mapper runs after the effects and writes SDR sRGB before
+the HUD draws. The ACES option includes ACES 1.3 Reference Gamut
+Compression. Khronos PBR Neutral maps linear Rec.709 before sRGB encoding.
+
+HDR Exposure (%) scales the linear gameplay image just before tone mapping.
+This lifts stock surface colors as well as PBR materials. Sky Brightness (%)
+scales the game's completed sky pass before scenery and vehicles render and
+therefore stacks with HDR Exposure. Each control ranges from 25% to 400%,
+with 100% as the default. Bloom extraction keeps a scene-linear threshold.
+
+Bloom thresholds the full-resolution HDR scene with a soft knee. A small
+blur keeps the glow close to the source, and three filtered levels at
+half, quarter and eighth resolution add wider glow. Raise
+EmissiveStrength to drive stronger glow while keeping the map's color.
+The current threshold is 1.0 in scene-linear values.
+
+SSR uses scene color and an INTZ depth texture after the world finishes
+drawing. This includes characters and the Family Sedan, which render
+after the earlier world-translucency boundary. Opaque PBR draws
+write their final view-space normal, roughness, depth, and spheremap
+specular contribution. A hit replaces part of that specular contribution.
+Alpha-blended foreground surfaces attenuate the SSR behind them. The
+spheremap supplies areas outside the visible scene and rough surfaces.
+Translucent PBR and glass use their own environment reflections.
+
+SSR Ray Steps sets the sample budget per ray (16 to 128, default 64).
+SSR Distance sets the maximum travel in world units (8 to 160, default
+64). Increase the sample budget when increasing distance to keep thin
+objects from falling between samples. Changes take effect at game start.
+
+SSGI traces a single diffuse bounce at half resolution from the scene
+color and INTZ depth before SSR and bloom. Nearby visible geometry can
+contribute light. Opaque PBR materials receive the bounce through their
+base color and metallic value. The filter uses surface depth and normals
+to smooth individual ray hits and preserve edges. Off-screen geometry
+and geometry hidden behind the visible surface are outside the trace.
+
+SSGI Rays per Pixel defaults to 16 (6 to 32). Higher counts reduce noise
+and cost more GPU time. SSGI Distance defaults to 3 world units (1 to 12).
+SSGI Strength defaults to 100% (0 to 200%). Zero skips the SSGI passes.
+
+SSGI on Opaque Level Scenery adds static meshes and instanced scenery as
+receivers. Their draws only need to write depth with alpha blending off.
+The scenery depth is compared with the finished world depth so cars and
+characters can occlude it. Stock scenery uses normals reconstructed from
+depth and the lit scene color as an approximation of base color. The
+scenery setting starts disabled.
+
+AMBIENT OCCLUSION
+
+Enable Ambient Occlusion (GTAO) under World Rendering with Linear HDR on.
+The effect samples the completed world depth, including cars and characters.
+It reconstructs view-space surface normals from the closer depth neighbors,
+integrates cosine-weighted visibility between two horizons per slice, and
+filters at half resolution before an edge-aware upsample. The sampling
+pattern is stable in screen space and uses a spatial filter.
+
+AO Quality defaults to High (4 slices, 6 samples per side). Performance
+uses 2 by 4 and Ultra uses 6 by 8. AO Radius is 25 to 250%, with 100%
+corresponding to 1.2 world units. AO Strength is 0 to 200%. AO View offers
+Game or Occlusion Only to inspect the grayscale visibility. Restart after
+changing these options.
+
+AO is composited as contact shading on the stock forward scene color before
+tone mapping. Bright HDR highlights and emission use a lower AO weight.
+The sky and HUD stay clear. Occlusion can change near the screen edge as
+occluders leave the depth buffer.
+
+LEGACY PAINT
+
+1. Export a rigid, opaque mesh with positions, normals, UV0 and an RGBA
+   vertex colour set. Keep the existing Shader chunk Name on car panels
+   whose base textures are swapped for vehicle damage.
+2. Put your tangent-space normal map in the VehicleShaders folder.
+   Normal maps and optional sphere maps use uncompressed 24-bit or 32-bit
+   true-colour TGA. Normal maps use RGB for positive tangent X, bitangent Y,
+   and normal Z. Invert green for a normal map authored with opposite Y.
+   Leave NormalMap empty for a flat normal. Omit SphereMap for the
+   built-in fallback.
+3. Add a section named after the material's Shader chunk Name in
+   VehicleShaders.ini. Start from the commented paint example and select
+   Mode=Paint. Use a simple, spheremap, or environment PDDI shader for its
+   stock fallback. PaintColour is six hexadecimal digits in RRGGBB order.
+   Reflection controls the sphere-map gain. NormalStrength scales the
+   red and green perturbation in the sampled normal map.
+
+The vertex colour set selected by MaskSet has this layout.
+
+  R   Reserved. The shader leaves it unused.
+  G   Shine. Higher values increase the sphere-map contribution and
+      sharpen the specular highlight.
+  B   Paint mask. Zero keeps the base colour. Full blue applies the
+      configured paint tint to the texture.
+  A   Ambient occlusion. White alpha leaves ambient light and reflections
+      at full strength. Lower alpha darkens them. Paint opacity still
+      comes from the base texture and the game's material.
+
+MaskSet=0 reads the primary colour set. MaskSet=1 reads the second set
+when the PC renderer exposes it as COLOR1. This is useful if the asset
+already reserves the primary set for lighting or another material effect.
+The hack leaves a draw on its stock rendering path if the requested colour
+set or required vertex attributes are missing. No vertex colour channels
+are repurposed on materials without a paint entry.
+
+The PC damage code swaps base textures on the named door, hood, trunk,
+and chassis materials. The paint shader samples the currently bound base
+texture. Keeping the original material names preserves those texture
+assignments. The custom normal map is shared between damage states.
+
+COMPATIBILITY AND TEST NOTES
+
+The hack targets the English retail executable with this SHA-256.
+2928118887B910AE03CE714E287D9BC67FB95F29E1B4F1271B8AF389990C0795
+
+Both effects use Direct3D 9 Shader Model 3.0. The first release targets
+rigid vehicle meshes. Skinned and screen-space geometry use stock
+rendering. The hack checks the known instruction sites before enabling
+its hooks and restores render state after each custom draw.
+
+The Level 1 playtest covered the Family Sedan windshield and both
+materials on the preview mesh with Lucas's Override Shader Parameters
+active. The preview uses the original base-color alpha and RGB emission.
+
+Set SHAR_SHADER_LOG to an absolute writable path before launching Lucas
+if you want a log of hook activation, selected materials, and custom draws.
