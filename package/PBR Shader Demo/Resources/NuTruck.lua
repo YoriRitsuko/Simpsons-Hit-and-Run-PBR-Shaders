@@ -6,9 +6,21 @@ local rootHeader = string.pack("<I4I4", 0xff443350, 12)
 local meshType = 0x10000
 local shaderType = 0x11000
 local meshNames = { nuctruckShape = true, wShape0 = true, windShape = true }
+local mounts = {
+    -- Match the wheel arch centers and tuck the wider tires under the outer lip.
+    w0 = { x = 0.88, z = -1.52 },
+    w1 = { x = -0.88, z = -1.52 },
+}
+local brakeMount = { lift = 0.11, setback = 0.16 }
+local reverseMount = { lift = 0.045, setback = 0.16 }
+for i = 1, 4 do
+    -- Each lamp has two stock sprite layers with slightly different depths.
+    mounts["brake" .. i] = brakeMount
+    mounts["rev" .. i] = reverseMount
+end
 
-local function readName(bytes, headerSize)
-    local name, nextField = string.unpack("<s1", bytes, 13)
+local function readName(bytes, headerSize, first)
+    local name, nextField = string.unpack("<s1", bytes, first or 13)
     assert(nextField <= headerSize + 1)
     return name:match("^[^%z]*"), nextField
 end
@@ -44,20 +56,50 @@ local function rewriteChildren(bytes, edit, countChildren)
     return string.pack("<I4I4I4", id, headerSize, headerSize + #content) .. header .. content
 end
 
-local function alignRearAxle(skeleton)
+local function fitTranslation(bytes, first, mount)
+    local x, y, z, after = string.unpack("<fff", bytes, first)
+    local translation = string.pack("<fff", mount.x or x, y + (mount.lift or 0), mount.z or (z - mount.setback))
+    return bytes:sub(1, first - 1) .. translation .. bytes:sub(after)
+end
+
+local function fitSkeleton(skeleton)
     local shifted = {}
     local updated = rewriteChildren(skeleton, function(id, joint, headerSize)
         if id ~= 0x4501 then return joint end
         local name, fields = readName(joint, headerSize)
-        if name ~= "w0" and name ~= "w1" then return joint end
+        local mount = mounts[name]
+        if not mount then return joint end
 
-        -- Both wheel pivots are root children. Keep the tire and suspension axis.
-        local z = fields + 6 * 4 + 14 * 4
-        assert(not shifted[name] and string.unpack("<i4", joint, fields) == 0 and z + 7 == headerSize)
+        -- These mounts are root children. Their local matrices use truck coordinates.
+        local translation = fields + 6 * 4 + 12 * 4
+        assert(not shifted[name] and string.unpack("<i4", joint, fields) == 0 and translation + 15 == headerSize)
         shifted[name] = true
-        return joint:sub(1, z - 1) .. string.pack("<f", -1.52) .. joint:sub(z + 4)
+        return fitTranslation(joint, translation, mount)
     end)
-    assert(shifted.w0 and shifted.w1)
+    for name in pairs(mounts) do assert(shifted[name]) end
+    return updated
+end
+
+local function fitPoseAnimation(animation)
+    local shifted = {}
+    local updated = rewriteChildren(animation, function(id, list)
+        if id ~= 0x121002 then return list end
+        return rewriteChildren(list, function(groupId, group, groupHeaderSize)
+            if groupId ~= 0x121001 then return group end
+            local name = readName(group, groupHeaderSize, 17)
+            local mount = mounts[name]
+            if not mount then return group end
+            return rewriteChildren(group, function(channelId, channel, channelHeaderSize)
+                if channelId ~= 0x121104 or channel:sub(17, 20) ~= "TRAN" then return channel end
+                -- PTRN_nuctruck writes absolute translations, overriding the rest pose.
+                local keyCount = string.unpack("<I4", channel, 21)
+                assert(not shifted[name] and keyCount == 1 and channelHeaderSize == 38)
+                shifted[name] = true
+                return fitTranslation(channel, 27, mount)
+            end)
+        end)
+    end)
+    for name in pairs(mounts) do assert(shifted[name]) end
     return updated
 end
 
@@ -93,7 +135,7 @@ local function buildReplacement()
     end)
     for name in pairs(meshNames) do assert(replacements[name]) end
 
-    local hasInteriorMaterial, hasSkeleton, hasComposite = false, false, false
+    local hasInteriorMaterial, hasSkeleton, hasAnimation, hasComposite = false, false, false, false
     visitFile(stockPath, function(id, bytes, headerSize)
         if id == meshType then
             local name = readName(bytes, headerSize)
@@ -107,7 +149,11 @@ local function buildReplacement()
         elseif id == 0x4500 and readName(bytes, headerSize) == "nuctruck" then
             assert(not hasSkeleton)
             hasSkeleton = true
-            bytes = alignRearAxle(bytes)
+            bytes = fitSkeleton(bytes)
+        elseif id == 0x121000 and readName(bytes, headerSize, 17) == "PTRN_nuctruck" then
+            assert(not hasAnimation)
+            hasAnimation = true
+            bytes = fitPoseAnimation(bytes)
         elseif id == 0x4512 and readName(bytes, headerSize) == "nuctruck" then
             assert(not hasComposite)
             hasComposite = true
@@ -115,7 +161,7 @@ local function buildReplacement()
         end
         chunks[#chunks + 1] = bytes
     end)
-    assert(not next(replacements) and hasInteriorMaterial and hasSkeleton and hasComposite)
+    assert(not next(replacements) and hasInteriorMaterial and hasSkeleton and hasAnimation and hasComposite)
     local content = table.concat(chunks)
     return rootHeader .. string.pack("<I4", 12 + #content) .. content
 end
