@@ -7,6 +7,7 @@ enum class ToneMapper { Aces13, KhronosNeutral };
 struct PostSettings {
     bool linear = false;
     bool bloom = true;
+    bool vignette = false;
     bool reflections = false;
     bool globalIllumination = false;
     bool staticIllumination = false;
@@ -22,6 +23,9 @@ struct PostSettings {
     unsigned aoStrength = 100;
     unsigned exposure = 100;
     unsigned skyBrightness = 100;
+    unsigned bloomStrength = 32;
+    unsigned bloomStreakMix = 25;
+    unsigned vignetteStrength = 30;
     ToneMapper toneMapper = ToneMapper::Aces13;
 };
 

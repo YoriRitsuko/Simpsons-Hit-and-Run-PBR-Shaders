@@ -2,9 +2,9 @@
 
 Glass can pick up a spheremap reflection. Rigid meshes can use forward PBR
 with GGX highlights, roughness-filtered HDR reflections and RGB emission.
-The optional linear HDR world pass adds selectable tone mapping, bloom,
-opaque screen-space reflections, screen-space global illumination and
-ambient occlusion.
+The optional linear HDR world pass adds selectable tone mapping, convolution
+bloom with horizontal streaks, vignette, opaque screen-space reflections,
+screen-space global illumination and ambient occlusion.
 
 ## Install
 
@@ -30,9 +30,9 @@ tutorial includes ready-to-copy INI sections, ORM packing, and per-material
 
 Right-click **PBR Shaders** in the **Settings** tab, open **Mod Settings**,
 and check **Linear HDR**. Choose **ACES 1.3** or **Khronos PBR Neutral** in
-**Tone Mapper**. **Bloom** starts checked and **Opaque Screen-Space
-Reflections** and **Screen-Space Global Illumination (SSGI)** have their own
-checkboxes and start disabled. Restart the game after changing these options.
+**Tone Mapper**. **Bloom** starts checked. **Vignette**, **Opaque Screen-Space
+Reflections**, and **Screen-Space Global Illumination (SSGI)** start disabled.
+Restart the game after changing these options.
 Turn off the launcher's MSAA setting when using HDR. SSR and SSGI also
 require an INTZ depth texture and four Direct3D 9 render targets.
 
@@ -48,9 +48,20 @@ The world is rendered into a floating-point target. SSR uses the completed
 world's color and depth, including characters and cars drawn near the end
 of the world pass. It replaces part of the spheremap contribution on
 opaque PBR materials. **SSR Ray Steps** defaults to 64 (16–128). **SSR
-Distance (World Units)** defaults to 64 (8–160). Bloom extracts bright
-pixels at full resolution, then uses filtered lower-resolution copies for
-wider glow. The selected tone mapper writes SDR sRGB before the HUD.
+Distance (World Units)** defaults to 64 (8–160).
+
+Bloom extracts highlights before HDR exposure, then convolves them at four
+resolutions from half to sixteenth scale for a soft halo. A horizontal
+convolution spreads part of the highlight into a longer streak.
+**Bloom Strength (%)** controls how much highlight light scatters into bloom
+and defaults to 32. **Bloom Streak Mix (%)** controls how much of that bloom
+goes into the streak and defaults to 25. Both range from 0 to 100.
+Set the streak mix to 0 for a halo alone.
+
+**Vignette** dims the gameplay image toward the corners with a soft,
+aspect-correct falloff. **Vignette Strength (%)** defaults to 30 when enabled
+and ranges from 0 to 100. Both bloom and vignette apply before tone mapping.
+The HUD draws after the HDR composite.
 
 SSGI adds one diffuse bounce from nearby visible surfaces. Opaque PBR
 materials receive it by default when SSGI is enabled. Check **SSGI on Opaque

@@ -317,6 +317,7 @@ void ReadPbrSettings()
     };
     pbrSettings.post.linear = tick(L"LinearHDR", false);
     pbrSettings.post.bloom = tick(L"HDRBloom", true);
+    pbrSettings.post.vignette = tick(L"HDRVignette", false);
     pbrSettings.post.reflections = tick(L"OpaqueSSR", false);
     pbrSettings.post.globalIllumination = tick(L"SSGI", false);
     pbrSettings.post.staticIllumination = tick(L"SSGIStaticWorld", false);
@@ -333,6 +334,9 @@ void ReadPbrSettings()
     pbrSettings.post.aoStrength = read(L"AOStrength", pbrSettings.post.aoStrength, 200);
     pbrSettings.post.exposure = std::max(25u, read(L"HDRExposure", pbrSettings.post.exposure, 400));
     pbrSettings.post.skyBrightness = std::max(25u, read(L"SkyBrightness", pbrSettings.post.skyBrightness, 400));
+    pbrSettings.post.bloomStrength = read(L"HDRBloomStrength", pbrSettings.post.bloomStrength, 100);
+    pbrSettings.post.bloomStreakMix = read(L"HDRBloomStreakMix", pbrSettings.post.bloomStreakMix, 100);
+    pbrSettings.post.vignetteStrength = read(L"HDRVignetteStrength", pbrSettings.post.vignetteStrength, 100);
 }
 
 struct PbrLights {

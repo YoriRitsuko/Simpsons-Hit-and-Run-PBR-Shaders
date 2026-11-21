@@ -5,7 +5,10 @@
 
 #include "AcesComposite.inc"
 #include "NeutralComposite.inc"
+#include "BloomPrefilter.inc"
 #include "BloomDownsample.inc"
+#include "BloomConvolution.inc"
+#include "BloomStreak.inc"
 #include "ScreenReflection.inc"
 #include "ScreenIrradiance.inc"
 #include "StaticIrradianceShape.inc"
@@ -25,6 +28,7 @@ namespace {
 constexpr D3DFORMAT hdrFormat = D3DFMT_A16B16G16R16F;
 constexpr auto depthFormat = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
 constexpr unsigned lutSize = 64;
+constexpr unsigned bloomStreakLevel = 1; // Quarter resolution.
 PostSettings options;
 IDirect3DDevice9* sceneDevice = nullptr;
 unsigned staticDisplayDepth = 0;
@@ -58,12 +62,20 @@ struct Target {
     }
 };
 
+struct BloomLevel {
+    Target image;
+    Target scratch;
+};
+
 struct Frame {
     IDirect3DDevice9* device = nullptr;
     UINT width = 0, height = 0;
     ComPtr<IDirect3DTexture9> lut;
     ComPtr<IDirect3DPixelShader9> composite;
-    ComPtr<IDirect3DPixelShader9> downsample;
+    ComPtr<IDirect3DPixelShader9> bloomPrefilter;
+    ComPtr<IDirect3DPixelShader9> bloomDownsample;
+    ComPtr<IDirect3DPixelShader9> bloomConvolution;
+    ComPtr<IDirect3DPixelShader9> bloomStreakShader;
     ComPtr<IDirect3DPixelShader9> reflections;
     ComPtr<IDirect3DPixelShader9> irradianceShader;
     ComPtr<IDirect3DPixelShader9> staticShapeShader;
@@ -79,7 +91,8 @@ struct Frame {
     Target staticShape;
     Target occlusion;
     Target occlusionScratch;
-    std::array<Target, 4> bloom;
+    std::array<BloomLevel, 4> bloom;
+    Target bloomStreak;
     std::array<Target, 3> material;
     ComPtr<IDirect3DTexture9> readableDepth;
     ComPtr<IDirect3DSurface9> depth;
@@ -103,6 +116,20 @@ struct Frame {
     D3DMATRIX projection{};
     D3DMATRIX aoProjection{};
 
+    void ClearBloom()
+    {
+        for (auto& level : bloom) {
+            level.image.Release();
+            level.scratch.Release();
+        }
+        bloomStreak.Release();
+        bloomPrefilter.Reset();
+        bloomDownsample.Reset();
+        bloomConvolution.Reset();
+        bloomStreakShader.Reset();
+        bloomReady = false;
+    }
+
     void Clear()
     {
         backBuffer.Reset();
@@ -114,7 +141,7 @@ struct Frame {
         staticShape.Release();
         occlusion.Release();
         occlusionScratch.Release();
-        for (auto& target : bloom) target.Release();
+        ClearBloom();
         for (auto& target : material) target.Release();
         depth.Reset();
         readableDepth.Reset();
@@ -122,7 +149,6 @@ struct Frame {
         staticDepthTexture.Reset();
         lut.Reset();
         composite.Reset();
-        downsample.Reset();
         reflections.Reset();
         irradianceShader.Reset();
         staticShapeShader.Reset();
@@ -131,7 +157,7 @@ struct Frame {
         horizonOcclusion.Reset();
         filterOcclusion.Reset();
         skyBrightness.Reset();
-        ready = bloomReady = reflectionReady = indirectReady = active = depthBound = hasReceivers = false;
+        ready = reflectionReady = indirectReady = active = depthBound = hasReceivers = false;
         staticDepthReady = hasStaticReceivers = staticShapeResolved = false;
         aoReady = aoProjectionKnown = materialTargetsCleared = false;
         device = nullptr;
@@ -259,12 +285,26 @@ bool CreateStaticCapture(IDirect3DDevice9* device, UINT width, UINT height)
 
 bool CreateBloom(IDirect3DDevice9* device, UINT width, UINT height)
 {
-    if (FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(BloomDownsampleCode),
-                                        frame.downsample.Put()))) return false;
-    for (auto& target : frame.bloom) {
-        if (!target.Create(device, width, height)) return false;
-        width = std::max(1u, width / 2);
-        height = std::max(1u, height / 2);
+    if (FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(BloomPrefilterCode),
+                                        frame.bloomPrefilter.Put())) ||
+        FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(BloomDownsampleCode),
+                                        frame.bloomDownsample.Put())) ||
+        FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(BloomConvolutionCode),
+                                        frame.bloomConvolution.Put()))) return false;
+    for (auto& level : frame.bloom) {
+        width = (width + 1) / 2;
+        height = (height + 1) / 2;
+        if (!level.image.Create(device, width, height) || !level.scratch.Create(device, width, height)) return false;
+    }
+    if (options.bloomStreakMix != 0) {
+        const auto& source = frame.bloom[bloomStreakLevel].image;
+        if (!frame.bloomStreak.Create(device, source.width, source.height) ||
+            FAILED(device->CreatePixelShader(reinterpret_cast<const DWORD*>(BloomStreakCode),
+                                            frame.bloomStreakShader.Put()))) {
+            frame.bloomStreak.Release();
+            frame.bloomStreakShader.Reset();
+            ShaderLog("Bloom streak resources are unavailable.");
+        }
     }
     return true;
 }
@@ -288,7 +328,13 @@ bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
         return false;
     }
     frame.ready = true;
-    frame.bloomReady = options.bloom && CreateBloom(device, desc.Width, desc.Height);
+    if (options.bloom && options.bloomStrength != 0) {
+        frame.bloomReady = CreateBloom(device, desc.Width, desc.Height);
+        if (!frame.bloomReady) {
+            frame.ClearBloom();
+            ShaderLog("Convolution bloom resources are unavailable.");
+        }
+    }
     const bool indirect = options.globalIllumination && options.indirectStrength != 0;
     const bool ao = options.ambientOcclusion && (options.aoStrength || options.occlusionOnly);
     const bool screen = options.reflections || indirect;
@@ -304,7 +350,6 @@ bool EnsureTargets(IDirect3DDevice9* device, const D3DSURFACE_DESC& desc)
             ShaderLog("Could not create the opaque scenery SSGI targets.");
         }
     }
-    if (options.bloom && !frame.bloomReady) ShaderLog("Bloom targets are unavailable.");
     if (options.reflections && !frame.reflectionReady) ShaderLog("SSR depth or material targets are unavailable.");
     if (indirect && !frame.indirectReady) ShaderLog("SSGI depth or material targets are unavailable.");
     if (ao && !frame.aoReady) ShaderLog("Ambient occlusion depth or half-resolution targets are unavailable.");
@@ -465,22 +510,59 @@ bool InstallSkyBrightnessHook()
     return true;
 }
 
-bool RenderBloom(IDirect3DDevice9* device)
+bool DrawBloomPass(IDirect3DDevice9* device, IDirect3DPixelShader9* shader, const Target& source,
+                   const Target& target, const std::array<float, 4>& parameters, DWORD filter = D3DTEXF_LINEAR)
 {
-    const Target* source = &frame.world;
-    for (const auto& target : frame.bloom) {
-        if (FAILED(device->SetRenderTarget(0, target.surface.Get()))) return false;
-        const float parameters[4] = {1.0f / source->width, 1.0f / source->height,
-                                     source == &frame.world ? 1.0f : 0.0f, 0};
-        device->SetPixelShaderConstantF(0, parameters, 1);
-        Sample(device, 0, source->texture.Get(), D3DTEXF_LINEAR);
-        if (!FullScreen(device, frame.downsample.Get(), target.width, target.height)) return false;
-        device->SetTexture(0, nullptr);
-        source = &target;
+    if (FAILED(device->SetRenderTarget(0, target.surface.Get())) ||
+        FAILED(device->SetPixelShaderConstantF(0, parameters.data(), 1))) return false;
+    Sample(device, 0, source.texture.Get(), filter);
+    const bool drawn = FullScreen(device, shader, target.width, target.height);
+    device->SetTexture(0, nullptr);
+    return drawn;
+}
+
+struct BloomOutput {
+    bool halo = false;
+    bool streak = false;
+};
+
+std::array<float, 4> BloomReduction(const Target& source, const Target& target)
+{
+    return {float(source.width) / target.width, float(source.height) / target.height,
+            1.0f / source.width, 1.0f / source.height};
+}
+
+BloomOutput RenderBloom(IDirect3DDevice9* device)
+{
+    const auto& first = frame.bloom.front().image;
+    if (!DrawBloomPass(device, frame.bloomPrefilter.Get(), frame.world, first,
+                       BloomReduction(frame.world, first), D3DTEXF_POINT)) return {};
+
+    for (unsigned i = 1; i < frame.bloom.size(); ++i) {
+        const auto& source = frame.bloom[i - 1].image;
+        const auto& target = frame.bloom[i].image;
+        if (!DrawBloomPass(device, frame.bloomDownsample.Get(), source, target,
+                           BloomReduction(source, target))) return {};
+    }
+
+    // The streak convolves the quarter-resolution highlight image before the
+    // halo passes blur it in both directions.
+    const auto& source = frame.bloom[bloomStreakLevel].image;
+    const bool streak = frame.bloomStreakShader.Get() &&
+        DrawBloomPass(device, frame.bloomStreakShader.Get(), source, frame.bloomStreak, {1.0f / source.width});
+    for (const auto& level : frame.bloom) {
+        if (!DrawBloomPass(device, frame.bloomConvolution.Get(), level.image, level.scratch,
+                           {1.0f / level.image.width, 0.0f}) ||
+            !DrawBloomPass(device, frame.bloomConvolution.Get(), level.scratch, level.image,
+                           {0.0f, 1.0f / level.image.height})) return {};
     }
     static bool logged = false;
-    if (!logged) { ShaderLog("Rendered HDR bloom with a full-resolution bright pass."); logged = true; }
-    return true;
+    if (!logged) {
+        ShaderLog(streak ? "Rendered HDR convolution bloom with horizontal streaks." :
+                           "Rendered HDR convolution bloom.");
+        logged = true;
+    }
+    return {true, streak};
 }
 
 void SampleScreenData(IDirect3DDevice9* device, DWORD colorFilter)
@@ -649,20 +731,27 @@ void FinishWorld()
         if (irradiance) ResolveIndirectLighting(device);
     }
     const bool ao = captured && RenderAmbientOcclusion(device);
-    const bool bloom = captured && frame.bloomReady && !(ao && options.occlusionOnly) && RenderBloom(device);
+    const auto bloom = captured && frame.bloomReady && !(ao && options.occlusionOnly)
+        ? RenderBloom(device) : BloomOutput{};
     device->SetRenderTarget(0, frame.backBuffer.Get());
     if (captured) {
-        const float parameters[4] = {bloom ? 0.32f : 0.0f, 1.0f / frame.width, 1.0f / frame.height,
+        const float parameters[4] = {bloom.halo ? options.bloomStrength * 0.01f : 0.0f,
+                                     bloom.streak ? options.bloomStreakMix * 0.01f : 0.0f, 0,
                                      options.exposure * 0.01f};
         device->SetPixelShaderConstantF(0, parameters, 1);
         const float ambientMode[4] = {ao ? (options.occlusionOnly ? 2.0f : 1.0f) : 0.0f, 0, 0, 0};
         device->SetPixelShaderConstantF(8, ambientMode, 1);
+        const float diagonal = std::hypot(float(frame.width), float(frame.height));
+        const float vignette[4] = {frame.width / diagonal, frame.height / diagonal,
+                                   options.vignette ? options.vignetteStrength * 0.01f : 0.0f, 0};
+        device->SetPixelShaderConstantF(10, vignette, 1);
         Sample(device, 0, frame.world.texture.Get(), D3DTEXF_POINT);
         if (ao) Sample(device, 8, frame.occlusion.texture.Get(), D3DTEXF_POINT);
-        if (bloom) {
+        if (bloom.halo) {
             for (unsigned i = 0; i < frame.bloom.size(); ++i)
-                Sample(device, i + 1, frame.bloom[i].texture.Get(), D3DTEXF_LINEAR);
+                Sample(device, i + 1, frame.bloom[i].image.texture.Get(), D3DTEXF_LINEAR);
         }
+        if (bloom.streak) Sample(device, 10, frame.bloomStreak.texture.Get(), D3DTEXF_LINEAR);
         if (frame.lut.Get()) Sample(device, 5, frame.lut.Get(), D3DTEXF_LINEAR);
         const bool drawn = FullScreen(device, frame.composite.Get(), frame.width, frame.height);
         static bool logged = false;
@@ -671,6 +760,10 @@ void FinishWorld()
                       options.toneMapper == ToneMapper::Aces13 ? "ACES 1.3." : "Khronos PBR Neutral.");
             const auto exposure = std::to_string(options.exposure) + "%.";
             ShaderLog("Applied HDR exposure: ", exposure.c_str());
+            if (vignette[2] > 0) {
+                const auto strength = std::to_string(options.vignetteStrength) + "%.";
+                ShaderLog("Applied vignette strength: ", strength.c_str());
+            }
             logged = true;
         }
         saved.Get()->Apply();

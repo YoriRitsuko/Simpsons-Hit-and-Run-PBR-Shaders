@@ -111,13 +111,13 @@ Diffuse environment light uses the roughest mip as an approximation.
 The preview texture set had no AO map, so the packer uses white in ORM red.
 Emission contributes to the material color.
 
-LINEAR HDR, BLOOM, SSR AND SSGI
+LINEAR HDR, BLOOM, VIGNETTE, SSR AND SSGI
 
 Check Linear HDR in the hack's Mod Settings and restart the game. The
 Tone Mapper menu offers ACES 1.3 (default) and Khronos PBR Neutral.
-Bloom, Opaque Screen-Space Reflections and Screen-Space Global
+Bloom, Vignette, Opaque Screen-Space Reflections and Screen-Space Global
 Illumination (SSGI) each have a checkbox in the same group. Bloom starts
-enabled for HDR. SSR and SSGI start disabled. The HDR path needs the
+enabled for HDR. Vignette, SSR and SSGI start disabled. The HDR path needs the
 Lucas anti-aliasing option turned off. The classic path is used when
 the backbuffer is multisampled or an HDR target cannot be created.
 
@@ -134,11 +134,19 @@ scales the game's completed sky pass before scenery and vehicles render and
 therefore stacks with HDR Exposure. Each control ranges from 25% to 400%,
 with 100% as the default. Bloom extraction keeps a scene-linear threshold.
 
-Bloom thresholds the full-resolution HDR scene with a soft knee. A small
-blur keeps the glow close to the source, and three filtered levels at
-half, quarter and eighth resolution add wider glow. Raise
-EmissiveStrength to drive stronger glow while keeping the map's color.
-The current threshold is 1.0 in scene-linear values.
+Bloom thresholds the unexposed HDR scene with a soft knee around 1.0.
+It applies a normalized separable convolution from half to sixteenth
+resolution for the halo. A separate horizontal exponential kernel
+creates streaks from the quarter-resolution highlights. Bloom Strength
+(%) controls how much highlight radiance scatters into the halo and
+streak (0–100, default 32). Bloom Streak Mix (%) controls the share
+that goes into the streak (0–100, default 25). Raise EmissiveStrength to
+drive stronger glow while keeping the map's color.
+
+Vignette dims the corners before tone mapping and keeps the falloff
+circular in screen pixels. Vignette Strength (%) controls how much
+scene-linear light is removed at the corners (0–100, default 30).
+It can run with Bloom disabled. The HUD draws after both effects.
 
 SSR uses scene color and an INTZ depth texture after the world finishes
 drawing. This includes characters and the Family Sedan, which render

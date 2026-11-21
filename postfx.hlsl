@@ -8,6 +8,7 @@ sampler2D irradianceTexture : register(s6);
 sampler2D staticTexture : register(s7);
 sampler2D occlusionTexture : register(s8);
 sampler2D occlusionDepth : register(s9);
+sampler2D bloomStreakTexture : register(s10);
 
 float4 passParameters : register(c0);
 row_major float4x4 projection : register(c1);
@@ -16,6 +17,7 @@ float4 occlusionControls : register(c6);
 float4 occlusionGrid : register(c7);
 float4 occlusionMode : register(c8);
 float4 skyView : register(c9);
+float4 vignetteControls : register(c10);
 
 float AmbientVisibility(float2 uv);
 
@@ -26,28 +28,106 @@ float4 SkyBrightness(float2 uv : TEXCOORD0) : COLOR0
     return sky;
 }
 
-float3 BloomSample(float2 uv)
+float3 ExtractBloom(float3 color)
 {
-    float3 color = tex2D(sceneTexture, uv).rgb;
+    color = max(color, 0.0);
     float brightness = max(color.r, max(color.g, color.b));
     float knee = saturate(brightness - 0.5);
     float contribution = max(brightness - 1.0, knee * knee * 0.5);
     return color * (contribution / max(brightness, 0.0001));
 }
 
+void BloomFootprint(float2 uv, out float2 center, out float2 first, out float2 middle, out float2 last)
+{
+    float2 span = passParameters.xy;
+    float2 pixel = passParameters.zw;
+    float2 edge = uv / pixel - span * 0.5;
+    float2 start = floor(edge);
+    float2 fraction = edge - start;
+    // With dimensions rounded up, a destination pixel spans at most two
+    // source pixels of area and can overlap up to three source texels.
+    first = min(span, 1.0 - fraction);
+    last = max(0.0, fraction + span - 2.0);
+    middle = max(0.0, span - first - last);
+    center = (start + 0.5) * pixel;
+}
+
+float3 SampleBloomHighlight(float2 uv)
+{
+    return ExtractBloom(tex2Dlod(sceneTexture, float4(uv, 0, 0)).rgb);
+}
+
+float4 BloomPrefilter(float2 uv : TEXCOORD0) : COLOR0
+{
+    // Apply the soft threshold to the source texels before averaging so
+    // single-pixel highlights survive the half-resolution prefilter.
+    float2 pixel = passParameters.zw;
+    [branch] if (all(passParameters.xy == 2.0)) {
+        float2 diagonal = pixel * 0.5;
+        float2 other = diagonal * float2(1, -1);
+        float3 bright = SampleBloomHighlight(uv - diagonal) + SampleBloomHighlight(uv + diagonal) +
+                        SampleBloomHighlight(uv - other) + SampleBloomHighlight(uv + other);
+        return float4(bright * 0.25, 1);
+    }
+
+    float2 center, first, middle, last;
+    BloomFootprint(uv, center, first, middle, last);
+    float3 weightsX = float3(first.x, middle.x, last.x);
+    float3 weightsY = float3(first.y, middle.y, last.y);
+    float3 bright = 0;
+    [unroll] for (int y = 0; y < 3; ++y) {
+        [unroll] for (int x = 0; x < 3; ++x) {
+            float2 sampleUv = center + float2(x, y) * pixel;
+            bright += SampleBloomHighlight(sampleUv) * weightsX[x] * weightsY[y];
+        }
+    }
+    return float4(bright / (passParameters.x * passParameters.y), 1);
+}
+
 float4 BloomDownsample(float2 uv : TEXCOORD0) : COLOR0
 {
-    if (passParameters.z != 0) return float4(BloomSample(uv), 1);
-    float2 pixel = passParameters.xy;
-    float4 centre = tex2D(sceneTexture, uv);
-    float4 near = tex2D(sceneTexture, uv + pixel) + tex2D(sceneTexture, uv - pixel) +
-                  tex2D(sceneTexture, uv + pixel * float2(1, -1)) +
-                  tex2D(sceneTexture, uv + pixel * float2(-1, 1));
-    float4 wide = tex2D(sceneTexture, uv + float2(2 * pixel.x, 0)) +
-                  tex2D(sceneTexture, uv - float2(2 * pixel.x, 0)) +
-                  tex2D(sceneTexture, uv + float2(0, 2 * pixel.y)) +
-                  tex2D(sceneTexture, uv - float2(0, 2 * pixel.y));
-    return centre * 0.25 + near * 0.125 + wide * 0.0625;
+    if (all(passParameters.xy == 2.0)) return tex2D(sceneTexture, uv);
+
+    float2 center, first, middle, last;
+    BloomFootprint(uv, center, first, middle, last);
+    // Combine the first two texels on each axis using bilinear sampling.
+    float2 pair = first + middle;
+    float2 near = center + passParameters.zw * (middle / pair);
+    float2 far = center + passParameters.zw * 2.0;
+    float4 sum = tex2D(sceneTexture, near) * pair.x * pair.y +
+                 tex2D(sceneTexture, float2(far.x, near.y)) * last.x * pair.y +
+                 tex2D(sceneTexture, float2(near.x, far.y)) * pair.x * last.y +
+                 tex2D(sceneTexture, far) * last.x * last.y;
+    return sum / (passParameters.x * passParameters.y);
+}
+
+float4 BloomConvolution(float2 uv : TEXCOORD0) : COLOR0
+{
+    // The normalized 9-tap binomial kernel approximates a Gaussian.
+    // Each linear sample combines a pair of adjacent kernel taps.
+    float2 inner = passParameters.xy * (4.0 / 3.0);
+    float2 outer = passParameters.xy * (28.0 / 9.0);
+    float3 glow = tex2D(sceneTexture, uv).rgb * 70.0 +
+                  (tex2D(sceneTexture, uv - inner).rgb + tex2D(sceneTexture, uv + inner).rgb) * 84.0 +
+                  (tex2D(sceneTexture, uv - outer).rgb + tex2D(sceneTexture, uv + outer).rgb) * 9.0;
+    return float4(glow / 256.0, 1);
+}
+
+float4 BloomStreak(float2 uv : TEXCOORD0) : COLOR0
+{
+    // A normalized, symmetric exponential kernel extends 32 quarter-res
+    // texels along each side. Pair adjacent taps with bilinear filtering.
+    const float decay = 0.86;
+    float3 glow = tex2D(sceneTexture, uv).rgb;
+    float weight = decay * (1.0 + decay);
+    float total = 1.0;
+    [unroll] for (int tap = 1; tap < 32; tap += 2) {
+        float2 offset = float2(passParameters.x * (tap + decay / (1.0 + decay)), 0);
+        glow += (tex2D(sceneTexture, uv - offset).rgb + tex2D(sceneTexture, uv + offset).rgb) * weight;
+        total += 2.0 * weight;
+        weight *= decay * decay;
+    }
+    return float4(glow / total, 1);
 }
 
 float3 CompositeHdr(float2 uv)
@@ -62,14 +142,18 @@ float3 CompositeHdr(float2 uv)
         hdr *= 1.0 - min(0.75, (1.0 - AmbientVisibility(uv)) * amount);
     }
     if (passParameters.x > 0) {
-        float2 dx = float2(1.5 * passParameters.y, 0);
-        float2 dy = float2(0, 1.5 * passParameters.z);
-        float3 tight = tex2D(secondTexture, uv).rgb * 0.40 +
-                       (tex2D(secondTexture, uv + dx).rgb + tex2D(secondTexture, uv - dx).rgb +
-                        tex2D(secondTexture, uv + dy).rgb + tex2D(secondTexture, uv - dy).rgb) * 0.15;
-        float3 glow = tight * 0.16 + tex2D(thirdTexture, uv).rgb * 0.34 +
-                      tex2D(fourthTexture, uv).rgb * 0.30 + tex2D(fifthTexture, uv).rgb * 0.20;
-        hdr += glow * passParameters.x;
+        float3 glare = tex2D(secondTexture, uv).rgb * 0.30 + tex2D(thirdTexture, uv).rgb * 0.35 +
+                       tex2D(fourthTexture, uv).rgb * 0.23 + tex2D(fifthTexture, uv).rgb * 0.12;
+        if (passParameters.y > 0)
+            glare = lerp(glare, tex2D(bloomStreakTexture, uv).rgb, passParameters.y);
+        // Scatter part of the thresholded highlight into the normalized
+        // kernel. A uniformly bright scene keeps its original brightness.
+        hdr += (glare - ExtractBloom(scene.rgb)) * passParameters.x;
+    }
+    if (vignetteControls.z > 0) {
+        float2 position = (uv * 2.0 - 1.0) * vignetteControls.xy;
+        float falloff = smoothstep(0.16, 1.0, dot(position, position));
+        hdr *= 1.0 - vignetteControls.z * falloff;
     }
     return max(hdr, 0.0) * passParameters.w;
 }
