@@ -11,6 +11,13 @@ const textureKeys = new Map([
     ["spheremap", ".tga"], ["environment", ".dds"], ["interiormap", ".tga"],
 ]);
 
+function safeTextureFilename(name, extension) {
+    const stem = name.split(".", 1)[0].replace(/ +$/, "");
+    const device = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9\u00b9\u00b2\u00b3])$/i;
+    return name.length < 200 && !/[\x00-\x1f\\/:*?"<>|]/.test(name) &&
+        !device.test(stem) && name.toLowerCase().endsWith(extension);
+}
+
 function readMaterials(filename) {
     const sections = new Map();
     let active;
@@ -88,8 +95,8 @@ function packMaterials(materials, readAsset, model) {
         for (const [key, value] of settings) {
             const extension = textureKeys.get(key);
             if (extension) {
-                if (/[\\/:*?"<>|]/.test(value) || !value.toLowerCase().endsWith(extension))
-                    throw Error(`${key} needs a bare ${extension} filename in [${name}]`);
+                if (!safeTextureFilename(value, extension))
+                    throw Error(`${key} needs a regular ${extension} filename in [${name}]`);
                 const lower = value.replace(/[A-Z]/g, letter => letter.toLowerCase());
                 if (!assets.has(lower)) assets.set(lower, textureData(value, extension, readAsset(value)));
             }

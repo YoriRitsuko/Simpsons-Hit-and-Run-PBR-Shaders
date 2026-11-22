@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cwchar>
 #include <new>
+#include <string_view>
 #include <unordered_map>
 
 namespace {
@@ -61,9 +62,21 @@ float ParseFloat(const std::wstring& text, float fallback, float maximum)
 bool SafeTextureFilename(const std::wstring& name, const wchar_t* extension)
 {
     if (name.empty() || name.size() >= 200 ||
-        name.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos) return false;
+        name.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos ||
+        std::any_of(name.begin(), name.end(), [](wchar_t ch) { return ch < L' '; })) return false;
     const auto dot = name.find_last_of(L'.');
-    return dot != std::wstring::npos && _wcsicmp(name.c_str() + dot, extension) == 0;
+    if (dot == std::wstring::npos || _wcsicmp(name.c_str() + dot, extension) != 0) return false;
+
+    // Win32 recognizes device names even when they have one or more extensions.
+    auto stem = std::wstring_view(name).substr(0, name.find(L'.'));
+    while (!stem.empty() && stem.back() == L' ') stem.remove_suffix(1);
+    for (const std::wstring_view reserved : {L"CON", L"PRN", L"AUX", L"NUL", L"CONIN$", L"CONOUT$"}) {
+        if (stem.size() == reserved.size() && !_wcsnicmp(stem.data(), reserved.data(), stem.size())) return false;
+    }
+    if (stem.size() == 4 && (!_wcsnicmp(stem.data(), L"COM", 3) || !_wcsnicmp(stem.data(), L"LPT", 3)) &&
+        std::wstring_view(L"0123456789\u00b9\u00b2\u00b3").find(stem.back()) != std::wstring_view::npos)
+        return false;
+    return true;
 }
 
 template<class Read>
@@ -616,15 +629,14 @@ std::vector<uint8_t> ReadTextureFile(const std::wstring& filename)
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return {};
-    const DWORD length = GetFileSize(file, nullptr);
-    if (length < 18 || length > 64u * 1024 * 1024) {
-        CloseHandle(file);
-        return {};
-    }
+    struct CloseFile { HANDLE handle; ~CloseFile() { CloseHandle(handle); } } close{file};
+    LARGE_INTEGER size;
+    if (GetFileType(file) != FILE_TYPE_DISK || !GetFileSizeEx(file, &size) ||
+        size.QuadPart < 18 || size.QuadPart > maxPackageBytes) return {};
+    const auto length = static_cast<DWORD>(size.QuadPart);
     std::vector<uint8_t> buffer(length);
     DWORD read;
     const bool success = ReadFile(file, buffer.data(), length, &read, nullptr) && read == length;
-    CloseHandle(file);
     return success ? std::move(buffer) : std::vector<uint8_t>{};
 }
 
